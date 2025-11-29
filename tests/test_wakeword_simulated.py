@@ -10,6 +10,7 @@ import threading
 
 import numpy as np
 import pytest
+import requests
 import soundfile as sf
 
 from tests.test_helpers import (
@@ -58,7 +59,30 @@ def create_minimal_wakeword(wavfile, textword="hello", numberofwords=1, timeout=
     
     This is an alias to the shared helper function for backward compatibility.
     """
-    return create_minimal_wakeword_instance(wavfile, textword, numberofwords, timeout)
+#    return create_minimal_wakeword_instance(wavfile, textword, numberofwords, timeout)
+    ww = object.__new__(WakeWord)
+    ww.textword = textword
+    ww.wavword = str(wavfile)
+    ww.numberofwords = numberofwords
+    ww.timeout = timeout
+    ww.similarity_threshold = 75.0
+    ww.pre_speech_silence = None
+    ww.speech_duration_min = None
+    ww.speech_duration_max = None
+    ww.post_speech_silence = None
+    ww.buffer_seconds = 10
+    ww.verbose = False
+    ww.retry_count = 3
+    ww.retry_backoff = 0.5
+    ww._stop_event = threading.Event()
+    ww._transcriber_url = None
+    ww._matcher = None
+    ww._sound_buffer = None
+    ww._listening = False
+    ww._listen_thread = None
+    ww._session = None
+    ww._bundled_transcriber_process = None
+    return ww
 
 
 class TestWordMatcher:
@@ -342,3 +366,198 @@ class TestAudioDeviceManager:
         # Very high index that won't exist
         result = AudioDeviceManager.select_device(9999)
         assert result is None
+
+
+class TestNewFeatures:
+    """Tests for the new features: buffer size, verbose logging, health check, session config, retry."""
+    
+    def test_configurable_buffer_size(self, tmp_path):
+        """Test that buffer_seconds parameter is properly stored."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        ww = create_minimal_wakeword(wavfile)
+        # Default should be 10
+        ww.buffer_seconds = 10
+        assert ww.buffer_seconds == 10
+        
+        # Custom value
+        ww.buffer_seconds = 20
+        assert ww.buffer_seconds == 20
+    
+    def test_verbose_logging_disabled_by_default(self, tmp_path):
+        """Test that verbose logging is disabled by default."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        ww = create_minimal_wakeword(wavfile)
+        ww.verbose = False
+        assert ww.verbose is False
+    
+    def test_verbose_logging_can_be_enabled(self, tmp_path):
+        """Test that verbose logging can be enabled."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        ww = create_minimal_wakeword(wavfile)
+        ww.verbose = True
+        assert ww.verbose is True
+    
+    def test_session_headers_configuration(self, tmp_path):
+        """Test that session headers can be configured."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        ww = create_minimal_wakeword(wavfile)
+        ww._session = requests.Session()
+        
+        # Configure headers
+        ww.configure_session(headers={"Authorization": "Bearer test_token"})
+        assert ww._session.headers.get("Authorization") == "Bearer test_token"
+    
+    def test_check_transcriber_health_no_transcriber(self, tmp_path):
+        """Test health check returns correct status when no transcriber is configured."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        ww = create_minimal_wakeword(wavfile)
+        ww._transcriber_url = None
+        ww.verbose = False
+        ww._session = requests.Session()
+        
+        health = ww.check_transcriber_health()
+        assert health["healthy"] is True
+        assert "MFCC-only" in health["url"]
+        assert "status" in health  # Should have status field, not error
+    
+    def test_check_transcriber_health_with_unreachable_url(self, tmp_path):
+        """Test health check returns unhealthy for unreachable server."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        ww = create_minimal_wakeword(wavfile)
+        ww._transcriber_url = "http://localhost:99999"  # Invalid port
+        ww.verbose = False
+        ww._session = requests.Session()
+        
+        health = ww.check_transcriber_health()
+        assert health["healthy"] is False
+        assert "error" in health
+    
+    def test_retry_parameters_stored(self, tmp_path):
+        """Test that retry parameters are stored correctly."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        ww = create_minimal_wakeword(wavfile)
+        ww.retry_count = 5
+        ww.retry_backoff = 1.0
+        
+        assert ww.retry_count == 5
+        assert ww.retry_backoff == 1.0
+    
+    def test_log_method_silent_when_not_verbose(self, tmp_path, caplog):
+        """Test that _log method does nothing when verbose is False."""
+        import logging
+        
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        ww = create_minimal_wakeword(wavfile)
+        ww.verbose = False
+        
+        # Clear any existing logs
+        caplog.clear()
+        
+        # This should not log anything
+        ww._log("test message")
+        
+        # No logs should be captured
+        assert len(caplog.records) == 0
+    
+    def test_log_method_logs_when_verbose(self, tmp_path, caplog):
+        """Test that _log method logs when verbose is True."""
+        import logging
+        
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        ww = create_minimal_wakeword(wavfile)
+        ww.verbose = True
+        
+        # Set up logging to capture
+        with caplog.at_level(logging.DEBUG, logger="easywakeword.wakeword"):
+            ww._log("test message", logging.DEBUG)
+        
+        # Check that message was logged
+        assert any("test message" in record.message for record in caplog.records)
+
+
+class TestInputValidation:
+    """Tests for input parameter validation."""
+    
+    def test_invalid_buffer_seconds_zero(self, tmp_path):
+        """Test that buffer_seconds=0 raises ValueError."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        with pytest.raises(ValueError, match="buffer_seconds must be positive"):
+            WakeWord(
+                textword="hello",
+                wavword=str(wavfile),
+                numberofwords=1,
+                buffer_seconds=0
+            )
+    
+    def test_invalid_buffer_seconds_negative(self, tmp_path):
+        """Test that negative buffer_seconds raises ValueError."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        with pytest.raises(ValueError, match="buffer_seconds must be positive"):
+            WakeWord(
+                textword="hello",
+                wavword=str(wavfile),
+                numberofwords=1,
+                buffer_seconds=-5
+            )
+    
+    def test_invalid_retry_count_negative(self, tmp_path):
+        """Test that negative retry_count raises ValueError."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        with pytest.raises(ValueError, match="retry_count must be non-negative"):
+            WakeWord(
+                textword="hello",
+                wavword=str(wavfile),
+                numberofwords=1,
+                retry_count=-1
+            )
+    
+    def test_invalid_retry_backoff_negative(self, tmp_path):
+        """Test that negative retry_backoff raises ValueError."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        with pytest.raises(ValueError, match="retry_backoff must be non-negative"):
+            WakeWord(
+                textword="hello",
+                wavword=str(wavfile),
+                numberofwords=1,
+                retry_backoff=-0.5
+            )
+    
+    def test_retry_count_zero_is_valid(self, tmp_path):
+        """Test that retry_count=0 is valid (means no retries)."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        # Should not raise - 0 retries is valid
+        ww = WakeWord(
+            textword="hello",
+            wavword=str(wavfile),
+            numberofwords=1,
+            retry_count=0
+        )
+        assert ww.retry_count == 0

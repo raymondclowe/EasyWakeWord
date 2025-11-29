@@ -74,16 +74,18 @@
 1. **test_wakeword_simulated.py** tried to init real audio - rewrote to test components in isolation
 2. **test_mfcc_match** tests couldn't run in CI - removed dependency on audio hardware
 
-## Future Enhancements (From README Review)
+## Code Improvements (2024-11-29)
 
-### Code Improvements Needed
-1. Make buffer size configurable (currently hardcoded 10s) [not implemented]
-2. Add session configuration for Whisper API headers (authentication) [not implemented]
-3. Add verbose logging option (currently hardcoded print statements) [not implemented]
-4. Expose MFCC parameters (n_mfcc, n_fft, hop_length) as constructor args [not implemented]
-5. Add metrics/telemetry (detection rate, latency, false positives) [not implemented]
-6. Add health check method for transcription service [not implemented]
-7. Add retry logic for transient network failures [not implemented]
+### Implemented High Priority Features
+1. **Configurable Buffer Size** ✅ - Added `buffer_seconds` parameter (default: 10s)
+2. **Session Configuration** ✅ - Added `configure_session()` method and `session_headers` parameter
+3. **Verbose Logging** ✅ - Added `verbose` parameter, uses Python logging module
+4. **Health Check Method** ✅ - Added `check_transcriber_health()` method
+5. **Retry Logic** ✅ - Added `retry_count` and `retry_backoff` parameters with exponential backoff
+
+### Remaining Code Improvements Needed
+1. Expose MFCC parameters (n_mfcc, n_fft, hop_length) as constructor args [not implemented]
+2. Add metrics/telemetry (detection rate, latency, false positives) [not implemented]
 
 ### MFCC Matching Observations
 - Self-match always returns 100% similarity ✓

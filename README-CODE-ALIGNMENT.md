@@ -52,32 +52,32 @@ The README has been updated to represent the production-ready vision. Now we nee
 
 ## 🚀 Enhancements Needed
 
-### High Priority (Documented in README)
+### High Priority (Documented in README) - ✅ ALL IMPLEMENTED
 
-1. **Session Configuration for Authentication**
-   - README mentions API authentication via session headers
-   - Need to add method to configure `self._session` headers
-   - Required for cloud Whisper APIs
+1. **Session Configuration for Authentication** ✅
+   - Added `configure_session()` method to set headers and auth
+   - Added `session_headers` constructor parameter
+   - Works with cloud Whisper APIs that require authentication
 
-2. **Configurable Buffer Size**
-   - Currently hardcoded to 10 seconds
-   - Should be constructor parameter
+2. **Configurable Buffer Size** ✅
+   - Added `buffer_seconds` constructor parameter (default: 10)
    - Impacts memory usage and detection window
+   - Documented in API reference
 
-3. **Verbose Logging Option**
-   - Currently uses print statements
-   - Should have configurable logging level
-   - Use Python logging module
+3. **Verbose Logging Option** ✅
+   - Added `verbose` constructor parameter (default: False)
+   - Uses Python logging module via `_log()` method
+   - Replaced all hardcoded print statements
 
-4. **Health Check Method**
-   - Add `check_transcriber_health()` method
-   - Return status of transcription service
+4. **Health Check Method** ✅
+   - Added `check_transcriber_health()` method
+   - Returns status dict with healthy, url, latency_ms, error fields
    - Useful for monitoring and debugging
 
-5. **Retry Logic**
-   - Add retry for transient network failures
-   - Configurable retry count and backoff
-   - Don't fail on single network glitch
+5. **Retry Logic** ✅
+   - Added `retry_count` parameter (default: 3)
+   - Added `retry_backoff` parameter (default: 0.5s)
+   - Uses exponential backoff for transient network failures
 
 ### Medium Priority (Implied by README)
 
@@ -125,11 +125,12 @@ The README has been updated to represent the production-ready vision. Now we nee
 
 ## 📝 Documentation Improvements Needed
 
-### Code Documentation
-- [ ] Add comprehensive docstrings to all methods
+### Code Documentation - Partial Progress ✓
+- [x] Add comprehensive docstrings to new methods (check_transcriber_health, configure_session, _log)
+- [x] Document constructor parameters with types and descriptions
+- [x] Document exceptions that can be raised (ValueError for invalid params)
 - [ ] Document internal methods with # comments
-- [ ] Add type hints to all functions
-- [ ] Document exceptions that can be raised
+- [ ] Add type hints to remaining functions
 
 ### Example Improvements
 - [ ] Update examples to match README patterns
@@ -144,12 +145,16 @@ The README has been updated to represent the production-ready vision. Now we nee
 
 ## 🧪 Testing Gaps
 
-### Unit Tests Needed
-- [ ] Test MFCC similarity calculation
+### Unit Tests - Partial Progress ✓
+- [x] Test MFCC similarity calculation (in test_wakeword_simulated.py)
+- [x] Test timeout behavior (in test_wakeword_simulated.py)
+- [x] Test input validation (new TestInputValidation class)
+- [x] Test health check method
+- [x] Test session configuration
+- [x] Test verbose logging
 - [ ] Test silence detection logic
 - [ ] Test word segmentation
 - [ ] Test circular buffer wrap-around
-- [ ] Test timeout behavior
 - [ ] Test callback invocation
 - [ ] Test multiple concurrent detectors
 
