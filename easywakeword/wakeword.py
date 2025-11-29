@@ -11,13 +11,14 @@ Supports multiple STT backends:
 """
 
 import io
+import logging
 import os
 import subprocess
 import sys
 import threading
 import time
 import re
-from typing import Callable, Optional, Union
+from typing import Callable, Dict, Optional, Union
 
 import librosa
 import numpy as np
@@ -27,9 +28,15 @@ import soundfile as sf
 from scipy.spatial.distance import cosine
 
 
+# Configure module logger
+logger = logging.getLogger(__name__)
+
 # Constants for STT backend configuration
 DEFAULT_MINI_TRANSCRIBER_PORT = 8085
 MINI_TRANSCRIBER_REPO = "https://github.com/raymondclowe/mini_transcriber.git"
+DEFAULT_BUFFER_SECONDS = 10
+DEFAULT_RETRY_COUNT = 3
+DEFAULT_RETRY_BACKOFF = 0.5  # Initial retry delay in seconds
 
 
 class AudioDeviceManager:
@@ -392,16 +399,20 @@ class SoundBuffer:
     FREQUENCY = 16000
     MIN_THRESHOLD = 0.005
 
-    def __init__(self, seconds: int = 10, device: Optional[Union[int, str]] = None):
+    def __init__(self, seconds: int = DEFAULT_BUFFER_SECONDS, device: Optional[Union[int, str]] = None):
         """
         Initialize the sound buffer.
 
         Args:
-            seconds: Buffer length in seconds [not implemented: buffer size is currently hardcoded to 10s]
+            seconds: Buffer length in seconds (default: 10). Larger buffers use more memory
+                     but allow detection of longer wake phrases. Typical values: 5-30 seconds.
             device: Audio input device specification:
                     - None: Auto-select best available device
                     - int: Device index
                     - str: Device name pattern to match (case-insensitive)
+
+        Raises:
+            OSError: If no audio device is available or the selected device cannot be opened.
         """
         self.buffer_seconds = seconds
         self.buffer_length = self.buffer_seconds * self.FREQUENCY
@@ -565,7 +576,15 @@ class WakeWord:
     - URL string: Uses an external Whisper API at the specified URL
     - None: Relies only on MFCC matching without transcription confirmation
 
-    [not implemented: metrics/telemetry (detection rate, latency, false positives)]
+    Example:
+        >>> detector = WakeWord(
+        ...     textword="hey assistant",
+        ...     wavword="hey_assistant.wav",
+        ...     numberofwords=2,
+        ...     verbose=True
+        ... )
+        >>> detector.waitforit()  # Blocking detection
+        'hey assistant'
     """
 
     def __init__(
@@ -583,6 +602,11 @@ class WakeWord:
         speech_duration_min: Optional[float] = None,
         speech_duration_max: Optional[float] = None,
         post_speech_silence: Optional[float] = None,
+        buffer_seconds: int = DEFAULT_BUFFER_SECONDS,
+        verbose: bool = False,
+        session_headers: Optional[Dict[str, str]] = None,
+        retry_count: int = DEFAULT_RETRY_COUNT,
+        retry_backoff: float = DEFAULT_RETRY_BACKOFF,
     ):
         """
         Initialize the wake word detector.
@@ -594,12 +618,14 @@ class WakeWord:
             timeout: Timeout in seconds (default: 30)
             external_whisper_url: URL of external Whisper API for transcription
                                   (e.g., "http://localhost:8085" for mini_transcriber)
-            callback: Callback function for async detection
+            callback: Callback function for async detection. Called with detected text.
             device: Audio input device specification:
                     - None: Auto-select best available device
                     - int: Device index
-                    - str: Device name pattern to match (case-insensitive)
-            similarity_threshold: MFCC similarity threshold (0-100, default: 75)
+                    - str: Device name pattern to match (case-insensitive), or
+                           magic words: "best", "first", "default"
+            similarity_threshold: MFCC similarity threshold (0-100, default: 75).
+                                  Higher values reduce false positives but may miss detections.
             stt_backend: STT backend to use:
                          - "bundled": Auto-download and run mini_transcriber locally
                          - None: Use external_whisper_url if provided, otherwise MFCC only
@@ -611,6 +637,19 @@ class WakeWord:
                                  If None, auto-calculated from reference audio or heuristics.
             post_speech_silence: Minimum silence duration after speech ends (seconds).
                                  If None, auto-calculated from reference audio or heuristics.
+            buffer_seconds: Audio buffer size in seconds (default: 10). Larger buffers use
+                            more memory but allow detection of longer wake phrases.
+            verbose: Enable verbose logging output (default: False). When True, logs detailed
+                     information about detection process to the module logger.
+            session_headers: Optional dictionary of HTTP headers to include in all requests
+                             to the transcription API. Useful for authentication tokens.
+            retry_count: Number of retries for transient network failures (default: 3).
+            retry_backoff: Initial backoff delay in seconds for retries (default: 0.5).
+                           Uses exponential backoff: delay * 2^attempt.
+
+        Raises:
+            FileNotFoundError: If the wavword file does not exist.
+            ValueError: If numberofwords is less than 1.
         """
         self.textword = textword.lower().strip()
         self.wavword = wavword
@@ -621,6 +660,10 @@ class WakeWord:
         self.device = AudioDeviceManager.select_device(device)  # Resolve device specification
         self.similarity_threshold = similarity_threshold
         self.stt_backend = stt_backend
+        self.buffer_seconds = buffer_seconds
+        self.verbose = verbose
+        self.retry_count = retry_count
+        self.retry_backoff = retry_backoff
 
         # Calculate speech detection thresholds
         self.pre_speech_silence = pre_speech_silence
@@ -634,12 +677,111 @@ class WakeWord:
         self._listening = False
         self._listen_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
-        self._session = requests.Session()  # [not implemented: session configuration for Whisper API headers (authentication)]
+        self._session = requests.Session()
         self._bundled_transcriber_process: Optional[subprocess.Popen] = None
         self._transcriber_url: Optional[str] = None
 
+        # Configure session headers for API authentication
+        if session_headers:
+            self._session.headers.update(session_headers)
+
         # Set up transcriber URL based on backend configuration
         self._setup_stt_backend()
+
+        self._log(f"Initialized WakeWord detector for '{self.textword}'")
+
+    def _log(self, message: str, level: int = logging.DEBUG) -> None:
+        """
+        Log a message if verbose mode is enabled.
+
+        Args:
+            message: Message to log
+            level: Logging level (default: DEBUG)
+        """
+        if self.verbose:
+            logger.log(level, message)
+
+    def configure_session(self, headers: Optional[Dict[str, str]] = None,
+                          auth: Optional[tuple] = None) -> None:
+        """
+        Configure the HTTP session used for transcription API requests.
+
+        This method allows setting authentication headers or credentials for
+        cloud Whisper APIs that require authentication.
+
+        Args:
+            headers: Dictionary of HTTP headers to add to the session.
+                     Common headers include "Authorization", "X-API-Key", etc.
+            auth: Tuple of (username, password) for HTTP Basic authentication.
+
+        Example:
+            >>> detector.configure_session(
+            ...     headers={"Authorization": "Bearer YOUR_API_KEY"}
+            ... )
+        """
+        if headers:
+            self._session.headers.update(headers)
+            self._log(f"Updated session headers: {list(headers.keys())}")
+        if auth:
+            self._session.auth = auth
+            self._log("Configured session authentication")
+
+    def check_transcriber_health(self) -> Dict[str, Union[bool, str, float]]:
+        """
+        Check the health status of the transcription service.
+
+        Returns:
+            Dictionary with health status information:
+            - "healthy": bool indicating if service is reachable and responding
+            - "url": str of the transcriber URL being checked
+            - "latency_ms": float response time in milliseconds (if healthy)
+            - "error": str error message (if unhealthy)
+
+        Example:
+            >>> health = detector.check_transcriber_health()
+            >>> if health["healthy"]:
+            ...     print(f"Service OK, latency: {health['latency_ms']:.1f}ms")
+            ... else:
+            ...     print(f"Service unhealthy: {health['error']}")
+        """
+        result: Dict[str, Union[bool, str, float]] = {
+            "healthy": False,
+            "url": self._transcriber_url or "None (MFCC-only mode)",
+        }
+
+        if self._transcriber_url is None:
+            result["healthy"] = True
+            result["error"] = "No transcriber configured (MFCC-only mode)"
+            return result
+
+        try:
+            start_time = time.time()
+            response = self._session.get(
+                f"{self._transcriber_url}/health",
+                timeout=5
+            )
+            latency_ms = (time.time() - start_time) * 1000
+
+            if response.status_code == 200:
+                result["healthy"] = True
+                result["latency_ms"] = latency_ms
+                self._log(f"Transcriber health check OK: {latency_ms:.1f}ms")
+            else:
+                result["error"] = f"HTTP {response.status_code}"
+                self._log(f"Transcriber health check failed: HTTP {response.status_code}",
+                          logging.WARNING)
+
+        except requests.exceptions.Timeout:
+            result["error"] = "Connection timeout"
+            self._log("Transcriber health check failed: timeout", logging.WARNING)
+        except requests.exceptions.ConnectionError as e:
+            result["error"] = f"Connection error: {str(e)}"
+            self._log(f"Transcriber health check failed: {e}", logging.WARNING)
+        except Exception as e:
+            result["error"] = f"Unexpected error: {str(e)}"
+            self._log(f"Transcriber health check failed: {e}", logging.ERROR)
+
+        return result
 
     def _calculate_detection_thresholds(self) -> None:
         """
@@ -704,7 +846,7 @@ class WakeWord:
                 return max(duration, 0.2)  # Minimum 200ms to avoid too short detections
 
         except Exception as e:
-            print(f"Warning: Could not analyze reference audio duration: {e}")  # [not implemented: verbose logging option (currently hardcoded print statements)]
+            self._log(f"Could not analyze reference audio duration: {e}", logging.WARNING)
 
         return None
 
@@ -808,7 +950,9 @@ class WakeWord:
         Ensure the bundled mini_transcriber is running.
 
         Downloads and starts mini_transcriber if not already running.
-        Returns True if transcriber is available, False otherwise.
+
+        Returns:
+            True if transcriber is available, False otherwise.
         """
         if self.stt_backend != "bundled":
             return self._transcriber_url is not None
@@ -817,8 +961,9 @@ class WakeWord:
         try:
             response = self._session.get(
                 f"{self._transcriber_url}/health", timeout=2
-            )  # [not implemented: dedicated health check method for transcription service]
+            )
             if response.status_code == 200:
+                self._log("Bundled transcriber already running")
                 return True
         except Exception:
             pass
@@ -829,7 +974,7 @@ class WakeWord:
         )
 
         if not os.path.exists(transcriber_dir):
-            print("Downloading mini_transcriber for first-time setup...")  # [not implemented: verbose logging option (currently hardcoded print statements)]
+            self._log("Downloading mini_transcriber for first-time setup...", logging.INFO)
             os.makedirs(os.path.dirname(transcriber_dir), exist_ok=True)
             try:
                 subprocess.run(
@@ -837,18 +982,19 @@ class WakeWord:
                     check=True,
                     capture_output=True,
                 )
+                self._log("mini_transcriber downloaded successfully")
             except subprocess.CalledProcessError as e:
                 stderr_msg = e.stderr.decode() if e.stderr else "No error details"
-                print("Failed to download mini_transcriber: git clone failed")  # [not implemented: verbose logging option (currently hardcoded print statements)]
-                print(f"  Command: git clone {MINI_TRANSCRIBER_REPO} {transcriber_dir}")  # [not implemented: verbose logging option (currently hardcoded print statements)]
-                print(f"  Error: {stderr_msg}")  # [not implemented: verbose logging option (currently hardcoded print statements)]
+                self._log(f"Failed to download mini_transcriber: git clone failed", logging.ERROR)
+                self._log(f"  Command: git clone {MINI_TRANSCRIBER_REPO} {transcriber_dir}", logging.ERROR)
+                self._log(f"  Error: {stderr_msg}", logging.ERROR)
                 return False
 
         # Start mini_transcriber
         try:
             app_path = os.path.join(transcriber_dir, "app.py")
             if not os.path.exists(app_path):
-                print(f"mini_transcriber app.py not found at {app_path}")  # [not implemented: verbose logging option (currently hardcoded print statements)]
+                self._log(f"mini_transcriber app.py not found at {app_path}", logging.ERROR)
                 return False
 
             env = os.environ.copy()
@@ -862,32 +1008,36 @@ class WakeWord:
             )
 
             # Wait for transcriber to start
-            for _ in range(30):  # Wait up to 30 seconds
+            self._log("Waiting for mini_transcriber to start...")
+            for i in range(30):  # Wait up to 30 seconds
                 time.sleep(1)
                 try:
                     response = self._session.get(
                         f"{self._transcriber_url}/health", timeout=2
                     )
                     if response.status_code == 200:
-                        print("mini_transcriber started successfully")  # [not implemented: verbose logging option (currently hardcoded print statements)]
+                        self._log("mini_transcriber started successfully", logging.INFO)
                         return True
                 except Exception:
                     pass
+                self._log(f"Waiting for mini_transcriber... ({i+1}/30)")
 
-            print("Timed out waiting for mini_transcriber to start")  # [not implemented: verbose logging option (currently hardcoded print statements)]
+            self._log("Timed out waiting for mini_transcriber to start", logging.ERROR)
             return False
 
         except Exception as e:
-            print(f"Failed to start mini_transcriber: {e}")  # [not implemented: verbose logging option (currently hardcoded print statements)]
+            self._log(f"Failed to start mini_transcriber: {e}", logging.ERROR)
             return False
 
     def _initialize_audio(self) -> None:
         """Initialize audio buffer and word matcher."""
         if self._sound_buffer is None:
-            self._sound_buffer = SoundBuffer(seconds=10, device=self.device)
+            self._sound_buffer = SoundBuffer(seconds=self.buffer_seconds, device=self.device)
+            self._log(f"Audio buffer initialized: {self.buffer_seconds}s")
         if self._matcher is None:
             self._matcher = WordMatcher(sample_rate=SoundBuffer.FREQUENCY)
             self._matcher.load_reference_from_file(self.wavword, self.textword)
+            self._log(f"Word matcher initialized with reference: {self.wavword}")
 
     def _wait_for_buffer(self) -> None:
         """Wait for the audio buffer to be filled."""
@@ -898,13 +1048,13 @@ class WakeWord:
 
     def _transcribe_audio(self, audio_samples: np.ndarray) -> Optional[str]:
         """
-        Send audio to STT engine and get transcription.
+        Send audio to STT engine and get transcription with retry logic.
 
         Args:
             audio_samples: numpy array of audio samples
 
         Returns:
-            Transcription text or None if failed
+            Transcription text or None if failed after all retries.
         """
         if self._transcriber_url is None:
             return None
@@ -914,34 +1064,63 @@ class WakeWord:
             if not self._ensure_bundled_transcriber():
                 return None
 
-        try:
-            # Normalize and boost audio
-            audio_samples = audio_samples - np.mean(audio_samples)
-            max_val = np.max(np.abs(audio_samples))
-            if max_val > 0:
-                audio_samples = audio_samples / max_val
-            audio_samples = audio_samples * 1.5
-            audio_samples = np.clip(audio_samples, -1.0, 1.0)
+        # Normalize and boost audio
+        audio_samples = audio_samples - np.mean(audio_samples)
+        max_val = np.max(np.abs(audio_samples))
+        if max_val > 0:
+            audio_samples = audio_samples / max_val
+        audio_samples = audio_samples * 1.5
+        audio_samples = np.clip(audio_samples, -1.0, 1.0)
 
-            # Convert audio to WAV format in memory
-            buffer = io.BytesIO()
-            sf.write(buffer, audio_samples, SoundBuffer.FREQUENCY, format="WAV")
-            buffer.seek(0)
+        # Retry loop with exponential backoff
+        last_error = None
+        for attempt in range(self.retry_count):
+            try:
+                # Convert audio to WAV format in memory
+                buffer = io.BytesIO()
+                sf.write(buffer, audio_samples, SoundBuffer.FREQUENCY, format="WAV")
+                buffer.seek(0)
 
-            files = {"file": ("audio.wav", buffer, "audio/wav")}
-            data = {"model": "tiny", "language": "en", "initial_prompt": f"Wake word: {self.textword}"}
+                files = {"file": ("audio.wav", buffer, "audio/wav")}
+                data = {"model": "tiny", "language": "en", "initial_prompt": f"Wake word: {self.textword}"}
 
-            response = self._session.post(
-                f"{self._transcriber_url}/transcribe", files=files, data=data, timeout=10
-            )  # [not implemented: retry logic for transient network failures]
+                self._log(f"Sending transcription request (attempt {attempt + 1}/{self.retry_count})")
 
-            if response.status_code == 200:
-                result = response.json()
-                return result.get("text", "").strip()
-            return None
+                response = self._session.post(
+                    f"{self._transcriber_url}/transcribe", files=files, data=data, timeout=10
+                )
 
-        except Exception:
-            return None
+                if response.status_code == 200:
+                    result = response.json()
+                    text = result.get("text", "").strip()
+                    self._log(f"Transcription result: '{text}'")
+                    return text
+                else:
+                    self._log(f"Transcription request failed with HTTP {response.status_code}",
+                              logging.WARNING)
+                    last_error = f"HTTP {response.status_code}"
+
+            except requests.exceptions.Timeout as e:
+                self._log(f"Transcription request timed out (attempt {attempt + 1})", logging.WARNING)
+                last_error = "Timeout"
+            except requests.exceptions.ConnectionError as e:
+                self._log(f"Connection error during transcription (attempt {attempt + 1}): {e}",
+                          logging.WARNING)
+                last_error = f"Connection error: {e}"
+            except Exception as e:
+                self._log(f"Unexpected error during transcription (attempt {attempt + 1}): {e}",
+                          logging.WARNING)
+                last_error = f"Error: {e}"
+
+            # Exponential backoff before retry
+            if attempt < self.retry_count - 1:
+                backoff_delay = self.retry_backoff * (2 ** attempt)
+                self._log(f"Retrying in {backoff_delay:.1f}s...")
+                time.sleep(backoff_delay)
+
+        self._log(f"All {self.retry_count} transcription attempts failed. Last error: {last_error}",
+                  logging.ERROR)
+        return None
 
     def _detect_word(self) -> Optional[str]:
         """
