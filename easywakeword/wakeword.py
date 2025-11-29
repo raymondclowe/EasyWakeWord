@@ -49,6 +49,10 @@ DEFAULT_POST_SPEECH_SILENCE = 0.4
 # Sentinel value to indicate auto-calculation should be used
 AUTO_CALCULATE = None
 
+# Voice activity detection constants
+VOICE_ACTIVITY_THRESHOLD = 0.1  # Fraction of peak energy to consider as voice
+MIN_DETECTED_DURATION = 0.2  # Minimum duration to return from voice detection (seconds)
+
 
 class AudioDeviceManager:
     """Manages audio device selection with intelligent defaults and name-based matching."""
@@ -956,7 +960,7 @@ class WakeWord:
             rms = librosa.feature.rms(y=audio, frame_length=frame_length, hop_length=hop_length)[0]
 
             # Find frames above a threshold (relative to the max RMS)
-            threshold = np.max(rms) * 0.1  # 10% of peak energy
+            threshold = np.max(rms) * VOICE_ACTIVITY_THRESHOLD
             voice_frames = rms > threshold
 
             # Find contiguous voice segments
@@ -968,7 +972,7 @@ class WakeWord:
 
                 # Convert to time
                 duration = (end_frame - start_frame) * hop_length / SoundBuffer.FREQUENCY
-                return max(duration, 0.2)  # Minimum 200ms to avoid too short detections
+                return max(duration, MIN_DETECTED_DURATION)
 
         except Exception as e:
             self._log(f"Could not analyze reference audio duration: {e}", logging.WARNING)

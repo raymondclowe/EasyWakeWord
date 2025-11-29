@@ -6,6 +6,7 @@ without real microphones. They work in both Windows dev environments
 and GitHub Copilot CI environments.
 """
 
+import os
 import threading
 
 import numpy as np
@@ -743,10 +744,11 @@ class TestAutoCalculateSpeechDurations:
     
     def test_fallback_to_defaults_when_wav_analysis_fails(self, tmp_path):
         """Test that fallback defaults are used when WAV analysis fails."""
-        # Create a minimal/problematic WAV file (very short)
+        # Create a minimal/problematic WAV file (very short ~6ms of silence)
         wavfile = tmp_path / "minimal.wav"
-        # Very short audio that may not analyze well
-        sf.write(str(wavfile), np.zeros(100, dtype=np.float32), 16000)
+        sample_rate = 16000
+        very_short_duration_samples = int(0.00625 * sample_rate)  # ~6ms
+        sf.write(str(wavfile), np.zeros(very_short_duration_samples, dtype=np.float32), sample_rate)
         
         ww = create_minimal_wakeword_instance(wavfile=str(wavfile))
         
@@ -758,7 +760,6 @@ class TestAutoCalculateSpeechDurations:
     
     def test_auto_calculate_with_reference_wav(self):
         """Test auto-calculation with the repository's reference_word.wav file."""
-        import os
         ref_wav = os.path.join(
             os.path.dirname(os.path.dirname(__file__)), 
             "reference_word.wav"
