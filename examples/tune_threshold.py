@@ -20,6 +20,7 @@ import time
 import numpy as np
 
 try:
+    import librosa
     import soundfile as sf
     import sounddevice as sd
     from easywakeword.wakeword import WordMatcher, SoundBuffer
@@ -27,6 +28,23 @@ except ImportError as e:
     print(f"Error: Required packages not installed: {e}")
     print("Run: pip install easywakeword")
     sys.exit(1)
+
+
+def load_and_resample_audio(filepath: str, target_sr: int = 16000) -> np.ndarray:
+    """
+    Load audio from file and resample to target sample rate if needed.
+    
+    Args:
+        filepath: Path to the audio file
+        target_sr: Target sample rate (default: 16000)
+        
+    Returns:
+        Audio samples as a numpy array at the target sample rate
+    """
+    audio, sr = sf.read(filepath)
+    if sr != target_sr:
+        audio = librosa.resample(audio.astype(np.float32), orig_sr=sr, target_sr=target_sr)
+    return audio.astype(np.float32)
 
 
 def test_threshold(reference_file: str, threshold: float = 75.0, test_duration: float = 10.0):
@@ -44,17 +62,12 @@ def test_threshold(reference_file: str, threshold: float = 75.0, test_duration: 
     print(f"Reference audio: {reference_file}")
     print()
     
-    # Load reference audio
-    reference_audio, sr = sf.read(reference_file)
-    if sr != 16000:
-        print(f"Note: Reference audio is {sr}Hz, resampling to 16000Hz")
-        import librosa
-        reference_audio = librosa.resample(reference_audio.astype(np.float32), 
-                                          orig_sr=sr, target_sr=16000)
+    # Load reference audio using shared helper
+    reference_audio = load_and_resample_audio(reference_file, target_sr=16000)
     
     # Create matcher
     matcher = WordMatcher(sample_rate=16000)
-    matcher.set_reference(reference_audio.astype(np.float32), "target")
+    matcher.set_reference(reference_audio, "target")
     
     print(f"Recording {test_duration} seconds of audio...")
     print("Speak your wake word multiple times.")
@@ -139,16 +152,12 @@ def compare_thresholds(reference_file: str):
     print("different thresholds would classify each segment.")
     print()
     
-    # Load reference audio
-    reference_audio, sr = sf.read(reference_file)
-    if sr != 16000:
-        import librosa
-        reference_audio = librosa.resample(reference_audio.astype(np.float32), 
-                                          orig_sr=sr, target_sr=16000)
+    # Load reference audio using shared helper
+    reference_audio = load_and_resample_audio(reference_file, target_sr=16000)
     
     # Create matcher
     matcher = WordMatcher(sample_rate=16000)
-    matcher.set_reference(reference_audio.astype(np.float32), "target")
+    matcher.set_reference(reference_audio, "target")
     
     # Thresholds to test
     thresholds = [60, 65, 70, 75, 80, 85, 90]
