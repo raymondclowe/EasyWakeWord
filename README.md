@@ -52,8 +52,6 @@ Choose the right backend for your deployment scenario:
 | **LAN Whisper** | Production server, single detector (CPU-only) | ~200ms | Network-local | Medium (setup CPU transcription server) |
 | **Cloud Whisper** | High accuracy, scalable infrastructure | ~1-2s | Data sent to cloud | Easy (use API key) |
 
-living_room_detector.start()
-
 ## Usage Examples
 
 ### Basic Blocking Example
@@ -128,11 +126,10 @@ WakeWord(
 | `numberofwords` | int | ✓ | - | Number of words in the wake phrase |
 | `timeout` | int | | 30 | Timeout in seconds for detection |
 | `external_whisper_url` | str | | None | URL of external Whisper API (LAN or cloud) |
-| `stt_backend` | str | | None | `"bundled"` for auto mini_transcriber, `None` for external or MFCC-only |
+| `stt_backend` | str or None | | None | STT backend: `"bundled"` for auto mini_transcriber, `None` for external or MFCC-only |
 | `callback` | callable | | None | Callback function `fn(text: str)` for async detection |
 | `device` | int, str, or None | | None | Audio device: index, name pattern, or magic word ("best", "first", "default") |
 | `similarity_threshold` | float | | 75.0 | MFCC similarity threshold (0-100). Higher = fewer false positives |
-| `stt_backend` | str or None | | None | STT backend: "bundled", URL, or None |
 | `pre_speech_silence` | float or None | | None | Min silence before speech (auto-calculated from reference audio) |
 | `speech_duration_min` | float or None | | None | Min speech duration (auto-calculated from reference audio) |
 | `speech_duration_max` | float or None | | None | Max speech duration (auto-calculated from reference audio) |
