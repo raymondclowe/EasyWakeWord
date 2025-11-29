@@ -26,9 +26,12 @@ Requirements:
 
 import argparse
 import io
+import os
+import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 import librosa
 import numpy as np
@@ -37,7 +40,7 @@ import sounddevice as sd
 import soundfile as sf
 
 from easywakeword import WakeWord
-from easywakeword.wakeword import AudioDeviceManager
+from easywakeword.wakeword import AudioDeviceManager, DEFAULT_MINI_TRANSCRIBER_PORT, MINI_TRANSCRIBER_REPO
 
 
 def play_confirmation_chime():
@@ -121,7 +124,7 @@ def list_and_select_device():
         return None
 
 
-def transcribe_reference_wav(wav_path: str, whisper_url: str) -> str:
+def transcribe_reference_wav(wav_path: str, whisper_url: str) -> Optional[str]:
     """
     Transcribe a reference WAV file using the LAN Whisper server.
     
@@ -308,10 +311,12 @@ Examples:
     if args.url:
         stt_backend = None
         external_whisper_url = args.url
+        whisper_url = args.url
         whisper_desc = f"External server: {args.url}"
     else:
         stt_backend = "bundled"
         external_whisper_url = None
+        whisper_url = f"http://localhost:{DEFAULT_MINI_TRANSCRIBER_PORT}"
         whisper_desc = "Bundled mini_transcriber"
     
     # Check server health (unless skipped or MFCC-only mode)
@@ -328,7 +333,19 @@ Examples:
     # Transcribe reference WAV to determine wake word
     wake_word_text = args.text
     if wake_word_text is None:
-        if external_whisper_url:
+        if stt_backend == "bundled":
+            if WakeWord.ensure_bundled_transcriber():
+                transcription = transcribe_reference_wav(str(wav_path), whisper_url)
+                if transcription:
+                    wake_word_text = transcription.strip().lower().rstrip('.,!?;:')
+                    print(f"Detected wake word: '{wake_word_text}'")
+                else:
+                    print("Could not transcribe reference, using 'computer' as default")
+                    wake_word_text = "computer"
+            else:
+                print("Could not start bundled transcriber, using 'computer' as default")
+                wake_word_text = "computer"
+        elif external_whisper_url:
             transcription = transcribe_reference_wav(str(wav_path), external_whisper_url)
             if transcription:
                 wake_word_text = transcription.strip().lower().rstrip('.,!?;:')

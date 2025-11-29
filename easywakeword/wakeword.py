@@ -611,6 +611,106 @@ class WakeWord:
         ... )
     """
 
+    @classmethod
+    def ensure_bundled_transcriber(cls) -> bool:
+        """
+        Ensure the bundled mini_transcriber is running.
+
+        This is a class method that can be called before creating WakeWord instances
+        to pre-start the bundled transcriber for faster initialization.
+
+        Downloads and starts mini_transcriber if not already running.
+        Returns True if transcriber is available, False otherwise.
+
+        Example:
+            >>> WakeWord.ensure_bundled_transcriber()  # Pre-start transcriber
+            >>> detector = WakeWord("ok computer", "computer.wav", 2)
+        """
+        transcriber_url = f"http://localhost:{DEFAULT_MINI_TRANSCRIBER_PORT}"
+
+        # Check if transcriber is already running
+        try:
+            response = requests.get(f"{transcriber_url}/health", timeout=2)
+            if response.status_code == 200:
+                logger.info("Bundled transcriber already running")
+                return True
+        except Exception:
+            pass
+
+        # Try to download and start mini_transcriber
+        transcriber_dir = os.path.join(
+            os.path.expanduser("~"), ".easywakeword", "mini_transcriber"
+        )
+
+        if not os.path.exists(transcriber_dir):
+            logger.info("Downloading mini_transcriber for first-time setup...")
+            os.makedirs(os.path.dirname(transcriber_dir), exist_ok=True)
+            try:
+                subprocess.run(
+                    ["git", "clone", MINI_TRANSCRIBER_REPO, transcriber_dir],
+                    check=True,
+                    capture_output=True,
+                )
+                logger.info("mini_transcriber downloaded successfully")
+            except subprocess.CalledProcessError as e:
+                stderr_msg = e.stderr.decode() if e.stderr else "No error details"
+                logger.error(f"Failed to download mini_transcriber: git clone failed")
+                logger.error(f"  Command: git clone {MINI_TRANSCRIBER_REPO} {transcriber_dir}")
+                logger.error(f"  Error: {stderr_msg}")
+                return False
+
+        # Install dependencies if requirements.txt exists
+        req_file = os.path.join(transcriber_dir, "requirements.txt")
+        if os.path.exists(req_file):
+            logger.info("Installing dependencies...")
+            try:
+                subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "-r", req_file],
+                    cwd=transcriber_dir,
+                    check=True,
+                )
+            except subprocess.CalledProcessError as e:
+                logger.error("Failed to install dependencies")
+                return False
+
+        # Start mini_transcriber
+        try:
+            app_path = os.path.join(transcriber_dir, "app.py")
+            if not os.path.exists(app_path):
+                logger.error(f"mini_transcriber app.py not found at {app_path}")
+                return False
+
+            env = os.environ.copy()
+            env["PORT"] = str(DEFAULT_MINI_TRANSCRIBER_PORT)
+            process = subprocess.Popen(
+                [sys.executable, app_path],
+                cwd=transcriber_dir,
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+            # Wait for transcriber to start
+            logger.info("Waiting for mini_transcriber to start...")
+            for i in range(60):  # Wait up to 60 seconds
+                time.sleep(1)
+                try:
+                    response = requests.get(f"{transcriber_url}/health", timeout=2)
+                    if response.status_code == 200:
+                        logger.info("mini_transcriber started successfully")
+                        return True
+                except Exception:
+                    pass
+                if (i + 1) % 10 == 0:
+                    logger.info(f"Still waiting for mini_transcriber... ({i+1}/60)")
+
+            logger.error("Timed out waiting for mini_transcriber to start")
+            return False
+
+        except Exception as e:
+            logger.error(f"Failed to start mini_transcriber: {e}")
+            return False
+
     def __init__(
         self,
         textword: str,
