@@ -716,7 +716,8 @@ class WakeWord:
         self.retry_count = retry_count
         self.retry_backoff = retry_backoff
 
-        # Use the provided fixed silence durations (no auto-calculation)
+        # Use the provided fixed silence durations directly
+        # (auto-calculation methods are kept for backwards compatibility but not called)
         self.pre_speech_silence = pre_speech_silence
         self.speech_duration_min = speech_duration_min
         self.speech_duration_max = speech_duration_max
@@ -838,6 +839,9 @@ class WakeWord:
         """
         Calculate speech detection thresholds based on reference audio or heuristics.
 
+        Note: This method is kept for backwards compatibility but is not called
+        automatically during initialization. Fixed defaults are now used instead.
+
         Sets self.pre_speech_silence, self.speech_duration_min, self.speech_duration_max,
         and self.post_speech_silence if they are None.
         """
@@ -861,6 +865,9 @@ class WakeWord:
     def _analyze_reference_audio_duration(self) -> Optional[float]:
         """
         Analyze the reference audio file to determine its actual speech duration.
+
+        Note: This method is kept for backwards compatibility. It can be used
+        to analyze reference audio if needed for custom threshold tuning.
 
         Returns:
             Duration of speech in the reference audio (seconds), or None if analysis fails
@@ -905,6 +912,9 @@ class WakeWord:
         """
         Set detection thresholds based on analyzed reference audio duration.
 
+        Note: This method is kept for backwards compatibility. Fixed defaults
+        are now used in the constructor instead.
+
         Args:
             audio_duration: Duration of speech in reference audio (seconds)
         """
@@ -926,6 +936,9 @@ class WakeWord:
     def _set_thresholds_from_text_heuristics(self) -> None:
         """
         Set detection thresholds based on text analysis heuristics.
+
+        Note: This method is kept for backwards compatibility. Fixed defaults
+        are now used in the constructor instead.
         """
         # Estimate syllables (rough approximation)
         text = self.textword.lower()
