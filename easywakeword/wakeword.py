@@ -16,7 +16,8 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Callable, Optional
+import re
+from typing import Callable, Optional, Union, Union
 
 import librosa
 import numpy as np
@@ -31,19 +32,376 @@ DEFAULT_MINI_TRANSCRIBER_PORT = 8085
 MINI_TRANSCRIBER_REPO = "https://github.com/raymondclowe/mini_transcriber.git"
 
 
+class AudioDeviceManager:
+    """Manages audio device selection with intelligent defaults and name-based matching."""
+
+    @staticmethod
+    def list_devices() -> list:
+        """
+        List all available audio input devices with their details.
+
+        Returns:
+            List of device dictionaries with index, name, and capabilities
+        """
+        devices = []
+        try:
+            device_list = sd.query_devices()
+            for i, device in enumerate(device_list):
+                if device['max_input_channels'] > 0:  # Only input devices
+                    # Filter out system audio capture/loopback devices
+                    device_name = device['name'].lower()
+                    if not AudioDeviceManager._is_system_audio_capture_device(device_name):
+                        devices.append({
+                            'index': i,
+                            'name': device['name'],
+                            'hostapi': sd.query_hostapis()[device['hostapi']]['name'],
+                            'default_samplerate': device['default_samplerate'],
+                            'max_input_channels': device['max_input_channels']
+                        })
+        except Exception as e:
+            print(f"Warning: Could not query audio devices: {e}")
+        return devices
+
+    @staticmethod
+    def _is_system_audio_capture_device(device_name: str) -> bool:
+        """
+        Check if a device name indicates a system audio capture/loopback device.
+
+        These devices capture system audio output rather than microphone input
+        and should not be used for wake word detection.
+
+        Args:
+            device_name: Device name to check
+
+        Returns:
+            True if this appears to be a system audio capture device
+        """
+        name_lower = device_name.lower()
+
+        # Common patterns for system audio capture devices
+        system_capture_patterns = [
+            'stereo mix',
+            'what u hear',
+            'wave out',
+            'loopback',
+            'capture',
+            'monitor',
+            'system audio',
+            'audio capture',
+            'sound capture'
+        ]
+
+        # Check for system capture patterns
+        for pattern in system_capture_patterns:
+            if pattern in name_lower:
+                return True
+
+        # Devices with "speaker" or "output" in name but having input channels
+        # are likely system audio capture devices
+        output_indicators = ['speaker', 'output', 'headphone']
+        has_output_indicator = any(indicator in name_lower for indicator in output_indicators)
+
+        # But allow devices that also have clear microphone indicators
+        mic_indicators = ['microphone', 'mic', 'input', 'line-in', 'aux']
+        has_mic_indicator = any(indicator in name_lower for indicator in mic_indicators)
+
+        if has_output_indicator and not has_mic_indicator:
+            return True
+
+        return False
+
+    @staticmethod
+    def select_device(device_spec: Optional[Union[int, str]] = None) -> Optional[int]:
+        """
+        Select an audio input device based on various criteria.
+
+        Args:
+            device_spec: Device selection specification:
+                - None: Auto-select best default device
+                - int: Device index
+                - str: Device name pattern, or magic word:
+                    - "best": Test all devices and pick one with highest audio level
+                    - "first": Find first working device (with audio signal)
+                    - "default": Use system default device
+                    - Other strings: Match against device names (case-insensitive)
+
+        Returns:
+            Device index or None if no suitable device found
+        """
+        devices = AudioDeviceManager.list_devices()
+        if not devices:
+            print("Warning: No audio input devices found")
+            return None
+
+        # If no specification, auto-select best device
+        if device_spec is None:
+            return AudioDeviceManager._auto_select_device(devices)
+
+        # If integer, use as device index
+        if isinstance(device_spec, int):
+            if 0 <= device_spec < len(sd.query_devices()) and sd.query_devices()[device_spec]['max_input_channels'] > 0:
+                return device_spec
+            else:
+                print(f"Warning: Device index {device_spec} is not valid or not an input device")
+                return None
+
+        # If string, handle magic words and name matching
+        if isinstance(device_spec, str):
+            magic_word = device_spec.lower().strip()
+
+            # Magic word: "best" - test all devices and pick highest audio level
+            if magic_word == "best":
+                return AudioDeviceManager.find_best_device_by_audio_level()
+
+            # Magic word: "first" - find first working device
+            elif magic_word == "first":
+                return AudioDeviceManager.find_first_working_device()
+
+            # Magic word: "default" - use system default
+            elif magic_word in ["default", "system"]:
+                return AudioDeviceManager._select_system_default(devices)
+
+            # Otherwise, treat as name pattern
+            else:
+                return AudioDeviceManager._select_by_name(devices, device_spec)
+
+        print(f"Warning: Invalid device specification: {device_spec}")
+        return None
+
+    @staticmethod
+    def _select_system_default(devices: list) -> Optional[int]:
+        """
+        Select the system default input device.
+
+        Args:
+            devices: List of device dictionaries
+
+        Returns:
+            System default device index, or None if not found
+        """
+        try:
+            default_device = sd.default.device[0]  # (input, output)
+            if default_device >= 0:
+                # Verify it's an input device
+                device_info = sd.query_devices()[default_device]
+                if device_info['max_input_channels'] > 0:
+                    return default_device
+        except:
+            pass
+
+        print("Warning: Could not determine system default device")
+        return None
+
+    @staticmethod
+    def _auto_select_device(devices: list) -> Optional[int]:
+        """
+        Auto-select the best available input device using preference hierarchy.
+
+        Priority order:
+        1. System default input device
+        2. First device with "microphone" in name
+        3. First device with "input" in name
+        4. First available device
+        """
+        if not devices:
+            return None
+
+        # Try to get system default input device
+        try:
+            default_device = sd.default.device[0]  # (input, output)
+            if default_device >= 0:
+                # Verify it's an input device
+                device_info = sd.query_devices()[default_device]
+                if device_info['max_input_channels'] > 0:
+                    return default_device
+        except:
+            pass
+
+        # Look for microphone devices
+        for device in devices:
+            if 'microphone' in device['name'].lower():
+                return device['index']
+
+        # Look for input devices
+        for device in devices:
+            if 'input' in device['name'].lower():
+                return device['index']
+
+        # Return first available device as fallback
+        return devices[0]['index']
+
+    @staticmethod
+    def _select_by_name(devices: list, name_pattern: str) -> Optional[int]:
+        """
+        Select device by name pattern matching.
+
+        Args:
+            devices: List of device dictionaries
+            name_pattern: Pattern to match against device names (case-insensitive)
+
+        Returns:
+            Device index or None if no match found
+        """
+        pattern = name_pattern.lower()
+
+        # Exact match first
+        for device in devices:
+            if device['name'].lower() == pattern:
+                return device['index']
+
+        # Partial match
+        for device in devices:
+            if pattern in device['name'].lower():
+                return device['index']
+
+        # Regex match
+        try:
+            regex = re.compile(pattern, re.IGNORECASE)
+            for device in devices:
+                if regex.search(device['name']):
+                    return device['index']
+        except re.error:
+            pass
+
+        print(f"Warning: No device found matching pattern: {name_pattern}")
+        return None
+
+    @staticmethod
+    def test_device_audio_level(device_index: int, test_duration: float = 0.1) -> float:
+        """
+        Test a device's audio level by recording a short sample.
+
+        Args:
+            device_index: Device index to test
+            test_duration: Duration in seconds to record (default: 100ms)
+
+        Returns:
+            RMS audio level (0.0 if no signal or error)
+        """
+        try:
+            import sounddevice as sd
+            import numpy as np
+
+            # Record test sample
+            sample_rate = 16000
+            samples = int(test_duration * sample_rate)
+
+            audio_data = sd.rec(
+                samples,
+                samplerate=sample_rate,
+                channels=1,
+                device=device_index,
+                dtype=np.float32
+            )
+            sd.wait()
+
+            # Calculate RMS level
+            audio_data = audio_data.flatten()
+            rms = np.sqrt(np.mean(audio_data**2))
+
+            return float(rms)
+
+        except Exception:
+            return 0.0
+
+    @staticmethod
+    def find_best_device_by_audio_level(min_rms_threshold: float = 0.001) -> Optional[int]:
+        """
+        Find the device with the highest audio level by testing all devices.
+
+        Args:
+            min_rms_threshold: Minimum RMS level to consider a device "working"
+
+        Returns:
+            Device index with highest audio level, or None if no working devices
+        """
+        devices = AudioDeviceManager.list_devices()
+        if not devices:
+            return None
+
+        best_device = None
+        best_rms = 0.0
+
+        print("Testing audio levels on all devices...")
+
+        for device in devices:
+            rms = AudioDeviceManager.test_device_audio_level(device['index'])
+            print(f"{rms:.4f}")
+
+            if rms > min_rms_threshold and rms > best_rms:
+                best_rms = rms
+                best_device = device['index']
+
+        if best_device is not None:
+            print(f"Selected device {best_device} with RMS {best_rms:.4f}")
+        else:
+            print("No devices with sufficient audio levels found")
+
+        return best_device
+
+    @staticmethod
+    def find_first_working_device(min_rms_threshold: float = 0.001) -> Optional[int]:
+        """
+        Find the first device that appears to be working (has audio signal).
+
+        Args:
+            min_rms_threshold: Minimum RMS level to consider a device "working"
+
+        Returns:
+            First working device index, or None if none found
+        """
+        devices = AudioDeviceManager.list_devices()
+        if not devices:
+            return None
+
+        print("Finding first working device...")
+
+        for device in devices:
+            rms = AudioDeviceManager.test_device_audio_level(device['index'])
+            print(f"{rms:.4f}")
+
+            if rms > min_rms_threshold:
+                print(f"Selected first working device {device['index']} with RMS {rms:.4f}")
+                return device['index']
+
+        print("No working devices found")
+        return None
+
+    @staticmethod
+    def print_device_list():
+        """Print a formatted list of available audio input devices."""
+        devices = AudioDeviceManager.list_devices()
+
+        if not devices:
+            print("No audio input devices found.")
+            return
+
+        print("Available audio input devices:")
+        print("-" * 60)
+        for device in devices:
+            default_marker = " (default)" if device['index'] == sd.default.device[0] else ""
+            print(f"{device['index']:2d}: {device['name']}{default_marker}")
+            print(f"    Host API: {device['hostapi']}")
+            print(f"    Channels: {device['max_input_channels']}, Sample Rate: {device['default_samplerate']}")
+            print()
+
+
 class SoundBuffer:
     """Circular audio buffer with silence detection."""
 
     FREQUENCY = 16000
     MIN_THRESHOLD = 0.005
 
-    def __init__(self, seconds: int = 10, device: Optional[int] = None):
+    def __init__(self, seconds: int = 10, device: Optional[Union[int, str]] = None):
         """
         Initialize the sound buffer.
 
         Args:
-            seconds: Buffer length in seconds
-            device: Audio input device index (None for default)
+            seconds: Buffer length in seconds [not implemented: buffer size is currently hardcoded to 10s]
+            device: Audio input device specification:
+                    - None: Auto-select best available device
+                    - int: Device index
+                    - str: Device name pattern to match (case-insensitive)
         """
         self.buffer_seconds = seconds
         self.buffer_length = self.buffer_seconds * self.FREQUENCY
@@ -54,11 +412,14 @@ class SoundBuffer:
         self.samples_collected = 0
         self._lock = threading.Lock()
 
+        # Resolve device specification to index
+        device_index = AudioDeviceManager.select_device(device)
+
         self.sd_stream = sd.InputStream(
             samplerate=self.FREQUENCY,
             channels=1,
             callback=self._add_sound_to_buffer,
-            device=device,
+            device=device_index,
         )
         self.sd_stream.start()
 
@@ -155,7 +516,7 @@ class WordMatcher:
         """Extract MFCC features from audio."""
         mfcc = librosa.feature.mfcc(
             y=audio, sr=self.sample_rate, n_mfcc=20, n_fft=512, hop_length=160
-        )
+        )  # [not implemented: MFCC parameters (n_mfcc, n_fft, hop_length) are hardcoded]
         mfcc_mean = np.mean(mfcc, axis=1)
         mfcc_std = np.std(mfcc, axis=1)
         return mfcc_mean, mfcc_std
@@ -203,6 +564,8 @@ class WakeWord:
     - "bundled": Auto-downloads and runs mini_transcriber locally
     - URL string: Uses an external Whisper API at the specified URL
     - None: Relies only on MFCC matching without transcription confirmation
+
+    [not implemented: metrics/telemetry (detection rate, latency, false positives)]
     """
 
     def __init__(
@@ -213,9 +576,13 @@ class WakeWord:
         timeout: int = 30,
         external_whisper_url: Optional[str] = None,
         callback: Optional[Callable[[str], None]] = None,
-        device: Optional[int] = None,
+        device: Optional[Union[int, str]] = None,
         similarity_threshold: float = 75.0,
         stt_backend: Optional[str] = None,
+        pre_speech_silence: Optional[float] = None,
+        speech_duration_min: Optional[float] = None,
+        speech_duration_max: Optional[float] = None,
+        post_speech_silence: Optional[float] = None,
     ):
         """
         Initialize the wake word detector.
@@ -228,11 +595,22 @@ class WakeWord:
             external_whisper_url: URL of external Whisper API for transcription
                                   (e.g., "http://localhost:8085" for mini_transcriber)
             callback: Callback function for async detection
-            device: Audio input device index (None for default)
+            device: Audio input device specification:
+                    - None: Auto-select best available device
+                    - int: Device index
+                    - str: Device name pattern to match (case-insensitive)
             similarity_threshold: MFCC similarity threshold (0-100, default: 75)
             stt_backend: STT backend to use:
                          - "bundled": Auto-download and run mini_transcriber locally
                          - None: Use external_whisper_url if provided, otherwise MFCC only
+            pre_speech_silence: Minimum silence duration before speech starts (seconds).
+                                If None, auto-calculated from reference audio or heuristics.
+            speech_duration_min: Minimum speech duration (seconds).
+                                 If None, auto-calculated from reference audio or heuristics.
+            speech_duration_max: Maximum speech duration (seconds).
+                                 If None, auto-calculated from reference audio or heuristics.
+            post_speech_silence: Minimum silence duration after speech ends (seconds).
+                                 If None, auto-calculated from reference audio or heuristics.
         """
         self.textword = textword.lower().strip()
         self.wavword = wavword
@@ -240,21 +618,178 @@ class WakeWord:
         self.timeout = timeout
         self.external_whisper_url = external_whisper_url
         self.callback = callback
-        self.device = device
+        self.device = AudioDeviceManager.select_device(device)  # Resolve device specification
         self.similarity_threshold = similarity_threshold
         self.stt_backend = stt_backend
+
+        # Calculate speech detection thresholds
+        self.pre_speech_silence = pre_speech_silence
+        self.speech_duration_min = speech_duration_min
+        self.speech_duration_max = speech_duration_max
+        self.post_speech_silence = post_speech_silence
+        self._calculate_detection_thresholds()
 
         self._sound_buffer: Optional[SoundBuffer] = None
         self._matcher: Optional[WordMatcher] = None
         self._listening = False
         self._listen_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
-        self._session = requests.Session()
+        self._session = requests.Session()  # [not implemented: session configuration for Whisper API headers (authentication)]
         self._bundled_transcriber_process: Optional[subprocess.Popen] = None
         self._transcriber_url: Optional[str] = None
 
         # Set up transcriber URL based on backend configuration
         self._setup_stt_backend()
+
+    def _calculate_detection_thresholds(self) -> None:
+        """
+        Calculate speech detection thresholds based on reference audio or heuristics.
+
+        Sets self.pre_speech_silence, self.speech_duration_min, self.speech_duration_max,
+        and self.post_speech_silence if they are None.
+        """
+        # If all thresholds are provided, use them as-is
+        if (self.pre_speech_silence is not None and
+            self.speech_duration_min is not None and
+            self.speech_duration_max is not None and
+            self.post_speech_silence is not None):
+            return
+
+        # Try to analyze reference audio file
+        reference_duration = self._analyze_reference_audio_duration()
+
+        if reference_duration is not None:
+            # Calculate thresholds based on reference audio
+            self._set_thresholds_from_audio_duration(reference_duration)
+        else:
+            # Fall back to text-based heuristics
+            self._set_thresholds_from_text_heuristics()
+
+    def _analyze_reference_audio_duration(self) -> Optional[float]:
+        """
+        Analyze the reference audio file to determine its actual speech duration.
+
+        Returns:
+            Duration of speech in the reference audio (seconds), or None if analysis fails
+        """
+        try:
+            # Load the reference audio
+            audio, sample_rate = librosa.load(self.wavword, sr=None)
+
+            # Resample to our working rate if needed
+            if sample_rate != SoundBuffer.FREQUENCY:
+                audio = librosa.resample(audio, orig_sr=sample_rate, target_sr=SoundBuffer.FREQUENCY)
+
+            # Simple voice activity detection using RMS energy
+            # Split into small frames
+            frame_length = int(0.025 * SoundBuffer.FREQUENCY)  # 25ms frames
+            hop_length = int(0.010 * SoundBuffer.FREQUENCY)    # 10ms hop
+
+            # Calculate RMS energy for each frame
+            rms = librosa.feature.rms(y=audio, frame_length=frame_length, hop_length=hop_length)[0]
+
+            # Find frames above a threshold (relative to the max RMS)
+            threshold = np.max(rms) * 0.1  # 10% of peak energy
+            voice_frames = rms > threshold
+
+            # Find contiguous voice segments
+            if np.any(voice_frames):
+                # Find the start and end of the main voice segment
+                voice_indices = np.where(voice_frames)[0]
+                start_frame = voice_indices[0]
+                end_frame = voice_indices[-1]
+
+                # Convert to time
+                duration = (end_frame - start_frame) * hop_length / SoundBuffer.FREQUENCY
+                return max(duration, 0.2)  # Minimum 200ms to avoid too short detections
+
+        except Exception as e:
+            print(f"Warning: Could not analyze reference audio duration: {e}")  # [not implemented: verbose logging option (currently hardcoded print statements)]
+
+        return None
+
+    def _set_thresholds_from_audio_duration(self, audio_duration: float) -> None:
+        """
+        Set detection thresholds based on analyzed reference audio duration.
+
+        Args:
+            audio_duration: Duration of speech in reference audio (seconds)
+        """
+        # Pre-speech silence: slightly longer than audio duration to ensure clean start
+        if self.pre_speech_silence is None:
+            self.pre_speech_silence = max(0.8, audio_duration * 0.8)
+
+        # Speech duration range: allow some variation around the reference
+        if self.speech_duration_min is None:
+            self.speech_duration_min = max(0.3, audio_duration * 0.6)
+
+        if self.speech_duration_max is None:
+            self.speech_duration_max = min(3.0, audio_duration * 1.8)
+
+        # Post-speech silence: similar to pre-speech
+        if self.post_speech_silence is None:
+            self.post_speech_silence = max(0.3, audio_duration * 0.4)
+
+    def _set_thresholds_from_text_heuristics(self) -> None:
+        """
+        Set detection thresholds based on text analysis heuristics.
+        """
+        # Estimate syllables (rough approximation)
+        text = self.textword.lower()
+        syllable_estimate = self._estimate_syllables(text)
+
+        # Base duration estimate: ~0.3 seconds per syllable
+        estimated_duration = syllable_estimate * 0.3
+
+        # Ensure reasonable bounds
+        estimated_duration = max(0.5, min(2.5, estimated_duration))
+
+        # Apply the same logic as audio-based calculation
+        self._set_thresholds_from_audio_duration(estimated_duration)
+
+    def _estimate_syllables(self, text: str) -> int:
+        """
+        Rough syllable estimation for English text.
+
+        Args:
+            text: Text to analyze
+
+        Returns:
+            Estimated number of syllables
+        """
+        # Remove punctuation and split into words
+        words = ''.join(c for c in text if c.isalnum() or c.isspace()).split()
+
+        total_syllables = 0
+
+        for word in words:
+            word = word.lower().strip()
+            if not word:
+                continue
+
+            # Count vowel groups (very rough approximation)
+            vowels = "aeiouy"
+            syllable_count = 0
+            prev_was_vowel = False
+
+            for char in word:
+                is_vowel = char in vowels
+                if is_vowel and not prev_was_vowel:
+                    syllable_count += 1
+                prev_was_vowel = is_vowel
+
+            # Ensure at least 1 syllable per word
+            syllable_count = max(1, syllable_count)
+
+            # Special cases
+            if word.endswith('e'):
+                syllable_count = max(1, syllable_count - 1)  # Silent e
+            if word.endswith(('es', 'ed')) and len(word) > 2:
+                syllable_count = max(1, syllable_count - 1)  # Common suffixes
+
+            total_syllables += syllable_count
+
+        return max(1, total_syllables)
 
     def _setup_stt_backend(self) -> None:
         """Set up the STT backend based on configuration."""
@@ -282,7 +817,7 @@ class WakeWord:
         try:
             response = self._session.get(
                 f"{self._transcriber_url}/health", timeout=2
-            )
+            )  # [not implemented: dedicated health check method for transcription service]
             if response.status_code == 200:
                 return True
         except Exception:
@@ -294,7 +829,7 @@ class WakeWord:
         )
 
         if not os.path.exists(transcriber_dir):
-            print("Downloading mini_transcriber for first-time setup...")
+            print("Downloading mini_transcriber for first-time setup...")  # [not implemented: verbose logging option (currently hardcoded print statements)]
             os.makedirs(os.path.dirname(transcriber_dir), exist_ok=True)
             try:
                 subprocess.run(
@@ -304,16 +839,16 @@ class WakeWord:
                 )
             except subprocess.CalledProcessError as e:
                 stderr_msg = e.stderr.decode() if e.stderr else "No error details"
-                print("Failed to download mini_transcriber: git clone failed")
-                print(f"  Command: git clone {MINI_TRANSCRIBER_REPO} {transcriber_dir}")
-                print(f"  Error: {stderr_msg}")
+                print("Failed to download mini_transcriber: git clone failed")  # [not implemented: verbose logging option (currently hardcoded print statements)]
+                print(f"  Command: git clone {MINI_TRANSCRIBER_REPO} {transcriber_dir}")  # [not implemented: verbose logging option (currently hardcoded print statements)]
+                print(f"  Error: {stderr_msg}")  # [not implemented: verbose logging option (currently hardcoded print statements)]
                 return False
 
         # Start mini_transcriber
         try:
             app_path = os.path.join(transcriber_dir, "app.py")
             if not os.path.exists(app_path):
-                print(f"mini_transcriber app.py not found at {app_path}")
+                print(f"mini_transcriber app.py not found at {app_path}")  # [not implemented: verbose logging option (currently hardcoded print statements)]
                 return False
 
             env = os.environ.copy()
@@ -334,16 +869,16 @@ class WakeWord:
                         f"{self._transcriber_url}/health", timeout=2
                     )
                     if response.status_code == 200:
-                        print("mini_transcriber started successfully")
+                        print("mini_transcriber started successfully")  # [not implemented: verbose logging option (currently hardcoded print statements)]
                         return True
                 except Exception:
                     pass
 
-            print("Timed out waiting for mini_transcriber to start")
+            print("Timed out waiting for mini_transcriber to start")  # [not implemented: verbose logging option (currently hardcoded print statements)]
             return False
 
         except Exception as e:
-            print(f"Failed to start mini_transcriber: {e}")
+            print(f"Failed to start mini_transcriber: {e}")  # [not implemented: verbose logging option (currently hardcoded print statements)]
             return False
 
     def _initialize_audio(self) -> None:
@@ -398,7 +933,7 @@ class WakeWord:
 
             response = self._session.post(
                 f"{self._transcriber_url}/transcribe", files=files, data=data, timeout=10
-            )
+            )  # [not implemented: retry logic for transient network failures]
 
             if response.status_code == 200:
                 result = response.json()
@@ -444,7 +979,7 @@ class WakeWord:
             elif state == "in_silence":
                 if not is_currently_silent:
                     silence_duration = current_time - silence_start_time
-                    if silence_duration >= 1.0:
+                    if silence_duration >= self.pre_speech_silence:
                         state = "in_sound"
                         sound_start_time = current_time
                     else:
@@ -453,11 +988,11 @@ class WakeWord:
             elif state == "in_sound":
                 if not is_currently_silent:
                     sound_duration = current_time - sound_start_time
-                    if sound_duration > 1.5:
+                    if sound_duration > self.speech_duration_max:
                         state = "waiting"
                 else:
                     sound_duration = current_time - sound_start_time
-                    if 0.5 <= sound_duration <= 1.5:
+                    if self.speech_duration_min <= sound_duration <= self.speech_duration_max:
                         state = "after_sound"
                         sound_end_time = current_time
                     else:
@@ -466,7 +1001,7 @@ class WakeWord:
             elif state == "after_sound":
                 if is_currently_silent:
                     trailing_silence_duration = current_time - sound_end_time
-                    if trailing_silence_duration >= 0.5:
+                    if trailing_silence_duration >= self.post_speech_silence:
                         # Extract the word
                         padding = 0.05
                         extract_start = sound_start_time - current_time - padding
