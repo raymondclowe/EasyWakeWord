@@ -5,11 +5,13 @@ These tests mock audio hardware to allow testing in CI environments
 without real microphones.
 """
 
+import threading
+
 import numpy as np
 import pytest
 import soundfile as sf
 
-from easywakeword.wakeword import WordMatcher
+from easywakeword.wakeword import AudioDeviceManager, WakeWord, WordMatcher
 
 
 def generate_wav(filename, duration=1.0, freq=440, sr=16000):
@@ -35,6 +37,34 @@ def generate_speech_like_audio(filename, duration=1.0, sr=16000):
     audio = (audio * envelope).astype(np.float32)
     sf.write(filename, audio, sr)
     return filename
+
+
+def create_minimal_wakeword(wavfile, textword="hello", numberofwords=1, timeout=1):
+    """
+    Create a minimal WakeWord instance without initializing audio hardware.
+    
+    This helper bypasses the audio device initialization to allow testing
+    the detection logic in CI environments without real microphones.
+    """
+    ww = object.__new__(WakeWord)
+    ww.textword = textword
+    ww.wavword = str(wavfile)
+    ww.numberofwords = numberofwords
+    ww.timeout = timeout
+    ww.similarity_threshold = 75.0
+    ww.pre_speech_silence = None
+    ww.speech_duration_min = None
+    ww.speech_duration_max = None
+    ww.post_speech_silence = None
+    ww._stop_event = threading.Event()
+    ww._transcriber_url = None
+    ww._matcher = None
+    ww._sound_buffer = None
+    ww._listening = False
+    ww._listen_thread = None
+    ww._session = None
+    ww._bundled_transcriber_process = None
+    return ww
 
 
 class TestWordMatcher:
@@ -146,21 +176,10 @@ class TestSyllableEstimation:
     
     def test_single_word(self, tmp_path):
         """Test syllable count for single words."""
-        from easywakeword.wakeword import WakeWord
-        
-        # Create a dummy instance to access the method
         wavfile = tmp_path / "test.wav"
         generate_wav(str(wavfile))
         
-        # Create WakeWord but don't initialize audio
-        ww = object.__new__(WakeWord)
-        ww.textword = "hello"
-        ww.wavword = str(wavfile)
-        ww.numberofwords = 1
-        ww.pre_speech_silence = None
-        ww.speech_duration_min = None
-        ww.speech_duration_max = None
-        ww.post_speech_silence = None
+        ww = create_minimal_wakeword(wavfile, textword="hello")
         
         # Test syllable estimation
         assert ww._estimate_syllables("hello") == 2  # hel-lo
@@ -174,9 +193,7 @@ class TestSyllableEstimation:
         wavfile = tmp_path / "test.wav"
         generate_wav(str(wavfile))
         
-        ww = object.__new__(WakeWord)
-        ww.textword = "ok google"
-        ww.wavword = str(wavfile)
+        ww = create_minimal_wakeword(wavfile, textword="ok google")
         
         # "ok google" should have 3-4 syllables (o-k goo-gle)
         syllables = ww._estimate_syllables("ok google")
@@ -188,14 +205,11 @@ class TestAudioDurationAnalysis:
     
     def test_analyze_reference_audio_duration(self, tmp_path):
         """Test that audio duration is correctly analyzed."""
-        from easywakeword.wakeword import WakeWord, SoundBuffer
-        
         # Create a 1-second audio file
         wavfile = tmp_path / "ref.wav"
         generate_speech_like_audio(str(wavfile), duration=1.0)
         
-        ww = object.__new__(WakeWord)
-        ww.wavword = str(wavfile)
+        ww = create_minimal_wakeword(wavfile)
         
         duration = ww._analyze_reference_audio_duration()
         # Duration should be detected (might be less than 1.0 due to envelope)
@@ -208,17 +222,10 @@ class TestThresholdCalculation:
     
     def test_threshold_from_audio_duration(self, tmp_path):
         """Test that thresholds are correctly calculated from audio duration."""
-        from easywakeword.wakeword import WakeWord
-        
         wavfile = tmp_path / "ref.wav"
         generate_speech_like_audio(str(wavfile), duration=1.0)
         
-        ww = object.__new__(WakeWord)
-        ww.wavword = str(wavfile)
-        ww.textword = "hello"
-        ww.pre_speech_silence = None
-        ww.speech_duration_min = None
-        ww.speech_duration_max = None
+        ww = create_minimal_wakeword(wavfile)
         ww.post_speech_silence = None
         
         # Calculate thresholds from 0.8s audio duration
@@ -237,14 +244,10 @@ class TestThresholdCalculation:
     
     def test_manual_thresholds_preserved(self, tmp_path):
         """Test that manually set thresholds are preserved."""
-        from easywakeword.wakeword import WakeWord
-        
         wavfile = tmp_path / "ref.wav"
         generate_speech_like_audio(str(wavfile), duration=1.0)
         
-        ww = object.__new__(WakeWord)
-        ww.wavword = str(wavfile)
-        ww.textword = "hello"
+        ww = create_minimal_wakeword(wavfile)
         ww.pre_speech_silence = 1.5
         ww.speech_duration_min = 0.5
         ww.speech_duration_max = 2.0
@@ -258,3 +261,92 @@ class TestThresholdCalculation:
         assert ww.speech_duration_min == 0.5
         assert ww.speech_duration_max == 2.0
         assert ww.post_speech_silence == 0.8
+
+
+class TestDetectionPipeline:
+    """Tests for the detection pipeline with simulated audio buffer."""
+    
+    def test_mock_detection_timeout(self, tmp_path):
+        """Test that detection times out correctly with silent buffer."""
+        wavfile = tmp_path / "ref.wav"
+        generate_speech_like_audio(str(wavfile), duration=1.0)
+        
+        # Create WakeWord without initializing real audio
+        ww = create_minimal_wakeword(wavfile)
+        ww.pre_speech_silence = 0.5
+        ww.speech_duration_min = 0.3
+        ww.speech_duration_max = 1.5
+        ww.post_speech_silence = 0.3
+        
+        # Create a mock sound buffer that's always silent
+        class MockSilentBuffer:
+            def is_buffer_full(self): return True
+            def is_silent(self): return True
+            def stop(self): pass
+            def return_last_n_seconds(self, n): return np.zeros(int(n * 16000), dtype=np.float32)
+        
+        ww._sound_buffer = MockSilentBuffer()
+        
+        # Initialize matcher
+        ww._matcher = WordMatcher(sample_rate=16000)
+        ww._matcher.load_reference_from_file(str(wavfile), "hello")
+        
+        # Should timeout
+        with pytest.raises(TimeoutError):
+            ww._detect_word()
+    
+    def test_matcher_integration_with_similar_audio(self, tmp_path):
+        """Test MFCC matching integration with the WakeWord class."""
+        wavfile = tmp_path / "ref.wav"
+        generate_speech_like_audio(str(wavfile), duration=1.0)
+        
+        # Create matcher and test with the reference audio
+        matcher = WordMatcher(sample_rate=16000)
+        matcher.load_reference_from_file(str(wavfile), "test")
+        
+        # Load the reference audio
+        audio, _ = sf.read(str(wavfile))
+        
+        # Should match itself
+        matches, similarity = matcher.matches(audio.astype(np.float32), threshold=75.0)
+        assert matches
+        assert similarity >= 75.0
+    
+    def test_audio_normalization(self, tmp_path):
+        """Test that audio normalization works correctly."""
+        wavfile = tmp_path / "ref.wav"
+        generate_wav(str(wavfile), freq=440)
+        
+        matcher = WordMatcher(sample_rate=16000)
+        audio, _ = sf.read(str(wavfile))
+        matcher.set_reference(audio.astype(np.float32), "test")
+        
+        # Test with scaled audio (should still match due to normalization in MFCC)
+        scaled_audio = audio.astype(np.float32) * 0.5
+        matches, similarity = matcher.matches(scaled_audio, threshold=75.0)
+        # MFCC is scale-invariant to some extent
+        assert similarity > 50.0  # Should still have reasonable similarity
+
+
+class TestAudioDeviceManager:
+    """Tests for AudioDeviceManager without real hardware."""
+    
+    def test_is_system_audio_capture_device(self):
+        """Test detection of system audio capture devices."""
+        # Should be detected as system capture devices
+        assert AudioDeviceManager._is_system_audio_capture_device("Stereo Mix")
+        assert AudioDeviceManager._is_system_audio_capture_device("What U Hear")
+        assert AudioDeviceManager._is_system_audio_capture_device("System Audio Capture")
+        assert AudioDeviceManager._is_system_audio_capture_device("Loopback Device")
+        assert AudioDeviceManager._is_system_audio_capture_device("Speaker Output")
+        
+        # Should NOT be detected as system capture devices
+        assert not AudioDeviceManager._is_system_audio_capture_device("USB Microphone")
+        assert not AudioDeviceManager._is_system_audio_capture_device("Built-in Microphone")
+        assert not AudioDeviceManager._is_system_audio_capture_device("Realtek HD Audio Input")
+    
+    def test_device_selection_with_invalid_index(self):
+        """Test that invalid device index returns None gracefully."""
+        # Very high index that won't exist
+        result = AudioDeviceManager.select_device(9999)
+        assert result is None
