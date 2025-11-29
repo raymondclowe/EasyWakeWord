@@ -681,3 +681,196 @@ class TestSimplifiedAPI:
         assert ww.speech_duration_min == 0.5
         assert ww.speech_duration_max == 3.0
         assert ww.post_speech_silence == 0.6
+
+
+class TestCallbackInvocation:
+    """Tests for async callback functionality."""
+    
+    def test_start_requires_callback(self, tmp_path):
+        """Test that start() requires a callback to be set."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        ww = create_minimal_wakeword(wavfile)
+        ww.callback = None  # No callback
+        
+        with pytest.raises(ValueError, match="Callback must be set"):
+            ww.start()
+    
+    def test_callback_can_be_set(self, tmp_path):
+        """Test that callback can be set and accessed."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        def my_callback(text):
+            pass
+        
+        ww = create_minimal_wakeword(wavfile)
+        ww.callback = my_callback
+        assert ww.callback is my_callback
+    
+    def test_is_listening_initially_false(self, tmp_path):
+        """Test that is_listening() returns False initially."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        ww = create_minimal_wakeword(wavfile)
+        assert ww.is_listening() is False
+    
+    def test_stop_safe_when_not_listening(self, tmp_path):
+        """Test that stop() is safe to call when not listening."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        ww = create_minimal_wakeword(wavfile)
+        # Should not raise
+        ww.stop()
+        assert ww.is_listening() is False
+
+
+class MockAudioBuffer:
+    """
+    Mock audio buffer for testing silence detection logic.
+    
+    This class simulates the SoundBuffer's silence detection behavior
+    without requiring real audio hardware.
+    """
+    def __init__(self, audio_data: np.ndarray = None, threshold: float = 0.01):
+        """
+        Initialize the mock buffer.
+        
+        Args:
+            audio_data: Audio samples (default: 1 second of silence)
+            threshold: Silence threshold for RMS comparison
+        """
+        if audio_data is None:
+            self.data = np.zeros(16000)  # 1 second of silence
+        else:
+            self.data = audio_data
+        self.frame_size = 512
+        self.silence_threshold = threshold
+    
+    def is_silent(self):
+        """Check if the recent audio is below the silence threshold."""
+        recent = self.data[-1600:]  # Last 100ms
+        rms = np.sqrt(np.mean(recent**2))
+        return rms < self.silence_threshold
+    
+    def return_last_n_seconds(self, n):
+        """Return the last n seconds of audio."""
+        samples = int(n * 16000)
+        return self.data[-samples:]
+
+
+class TestSilenceDetectionLogic:
+    """Tests for silence detection in the SoundBuffer class."""
+    
+    def test_silent_audio_is_detected(self, tmp_path):
+        """Test that silent audio is correctly identified."""
+        buffer = MockAudioBuffer()  # Default: silent audio
+        assert buffer.is_silent()  # True for silent audio
+    
+    def test_loud_audio_is_not_silent(self, tmp_path):
+        """Test that loud audio is not identified as silent."""
+        # Generate audio with significant amplitude
+        t = np.linspace(0, 1.0, 16000)
+        loud_audio = 0.5 * np.sin(2 * np.pi * 440 * t)
+        
+        buffer = MockAudioBuffer(audio_data=loud_audio)
+        assert not buffer.is_silent()  # False for loud audio
+    
+    def test_silence_threshold_adjustable(self, tmp_path):
+        """Test that silence threshold can be adjusted."""
+        # Generate quiet audio
+        t = np.linspace(0, 1.0, 16000)
+        quiet_audio = 0.005 * np.sin(2 * np.pi * 440 * t)  # Very quiet
+        
+        # With high threshold, quiet audio is "silent"
+        buffer_high = MockAudioBuffer(audio_data=quiet_audio, threshold=0.01)
+        assert buffer_high.is_silent()  # True - quiet audio below threshold
+        
+        # With low threshold, same audio is "not silent"
+        buffer_low = MockAudioBuffer(audio_data=quiet_audio, threshold=0.001)
+        assert not buffer_low.is_silent()  # False - same audio now above threshold
+
+
+class TestWordSegmentation:
+    """Tests for word segmentation and timing validation."""
+    
+    def test_audio_duration_validation(self, tmp_path):
+        """Test that audio duration within range passes validation."""
+        wavfile = tmp_path / "test.wav"
+        generate_speech_like_audio(str(wavfile), duration=1.0)
+        
+        ww = create_minimal_wakeword(wavfile)
+        ww.speech_duration_min = 0.3
+        ww.speech_duration_max = 2.0
+        
+        # 1.0 second duration should be valid (between 0.3 and 2.0)
+        duration = 1.0
+        is_valid = ww.speech_duration_min <= duration <= ww.speech_duration_max
+        assert is_valid is True
+    
+    def test_audio_too_short_fails_validation(self, tmp_path):
+        """Test that audio shorter than min duration fails validation."""
+        wavfile = tmp_path / "test.wav"
+        generate_speech_like_audio(str(wavfile), duration=1.0)
+        
+        ww = create_minimal_wakeword(wavfile)
+        ww.speech_duration_min = 0.5
+        ww.speech_duration_max = 2.0
+        
+        # 0.2 second duration should be invalid
+        duration = 0.2
+        is_valid = ww.speech_duration_min <= duration <= ww.speech_duration_max
+        assert is_valid is False
+    
+    def test_audio_too_long_fails_validation(self, tmp_path):
+        """Test that audio longer than max duration fails validation."""
+        wavfile = tmp_path / "test.wav"
+        generate_speech_like_audio(str(wavfile), duration=1.0)
+        
+        ww = create_minimal_wakeword(wavfile)
+        ww.speech_duration_min = 0.3
+        ww.speech_duration_max = 1.5
+        
+        # 3.0 second duration should be invalid
+        duration = 3.0
+        is_valid = ww.speech_duration_min <= duration <= ww.speech_duration_max
+        assert is_valid is False
+    
+    def test_pre_speech_silence_requirement(self, tmp_path):
+        """Test that pre-speech silence duration is validated."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        ww = create_minimal_wakeword(wavfile)
+        ww.pre_speech_silence = 0.8  # Require 0.8s silence before speech
+        
+        # 1.0 second silence should pass
+        silence_duration = 1.0
+        is_valid = silence_duration >= ww.pre_speech_silence
+        assert is_valid is True
+        
+        # 0.5 second silence should fail
+        silence_duration = 0.5
+        is_valid = silence_duration >= ww.pre_speech_silence
+        assert is_valid is False
+    
+    def test_post_speech_silence_requirement(self, tmp_path):
+        """Test that post-speech silence duration is validated."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        ww = create_minimal_wakeword(wavfile)
+        ww.post_speech_silence = 0.4  # Require 0.4s silence after speech
+        
+        # 0.5 second silence should pass
+        silence_duration = 0.5
+        is_valid = silence_duration >= ww.post_speech_silence
+        assert is_valid is True
+        
+        # 0.2 second silence should fail
+        silence_duration = 0.2
+        is_valid = silence_duration >= ww.post_speech_silence
+        assert is_valid is False

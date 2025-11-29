@@ -517,57 +517,123 @@ class SoundBuffer:
 
 
 class WordMatcher:
-    """Matches audio clips using MFCC similarity."""
+    """
+    Matches audio clips using MFCC (Mel-Frequency Cepstral Coefficients) similarity.
+    
+    MFCC features capture the spectral characteristics of audio, making them useful
+    for comparing speech patterns. This class compares a candidate audio clip against
+    a stored reference audio to determine similarity.
+    
+    The similarity calculation uses both mean and standard deviation of MFCC features,
+    weighted to produce a percentage score (0-100).
+    """
 
-    def __init__(self, sample_rate: int = 16000):
+    def __init__(self, sample_rate: int = 16000) -> None:
         """
         Initialize the word matcher.
 
         Args:
-            sample_rate: Audio sample rate
+            sample_rate: Audio sample rate in Hz (default: 16000)
         """
-        self.sample_rate = sample_rate
-        self.reference_mfcc_mean = None
-        self.reference_mfcc_std = None
-        self.reference_word = None
+        self.sample_rate: int = sample_rate
+        self.reference_mfcc_mean: Optional[np.ndarray] = None
+        self.reference_mfcc_std: Optional[np.ndarray] = None
+        self.reference_word: Optional[str] = None
 
-    def extract_mfcc(self, audio: np.ndarray) -> tuple:
-        """Extract MFCC features from audio."""
+    def extract_mfcc(self, audio: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Extract MFCC features from audio.
+        
+        Uses 20 MFCC coefficients with a 512-sample FFT window and 160-sample hop.
+        These parameters are optimized for speech at 16kHz.
+
+        Args:
+            audio: Audio samples as a 1D numpy array
+            
+        Returns:
+            Tuple of (mfcc_mean, mfcc_std) arrays, each with 20 coefficients
+        """
+        # Extract MFCC features using librosa
+        # n_mfcc=20: number of MFCC coefficients (standard for speech)
+        # n_fft=512: FFT window size (~32ms at 16kHz)
+        # hop_length=160: hop between windows (~10ms at 16kHz)
         mfcc = librosa.feature.mfcc(
             y=audio, sr=self.sample_rate, n_mfcc=20, n_fft=512, hop_length=160
-        )  # [not implemented: MFCC parameters (n_mfcc, n_fft, hop_length) are hardcoded]
+        )
+        # Compute temporal statistics (mean and std across time frames)
         mfcc_mean = np.mean(mfcc, axis=1)
         mfcc_std = np.std(mfcc, axis=1)
         return mfcc_mean, mfcc_std
 
     def set_reference(self, audio: np.ndarray, word_name: str = "target") -> None:
-        """Set the reference word to match against."""
+        """
+        Set the reference word to match against.
+        
+        Args:
+            audio: Audio samples as a 1D numpy array
+            word_name: Optional name for the reference word (for debugging)
+        """
         self.reference_word = word_name
         self.reference_mfcc_mean, self.reference_mfcc_std = self.extract_mfcc(audio)
 
     def load_reference_from_file(self, filepath: str, word_name: str = "target") -> None:
-        """Load reference word from audio file."""
+        """
+        Load reference word from an audio file.
+        
+        Args:
+            filepath: Path to a WAV file containing the reference audio
+            word_name: Optional name for the reference word (for debugging)
+        """
         audio, _ = librosa.load(filepath, sr=self.sample_rate)
         self.set_reference(audio, word_name)
 
     def calculate_similarity(self, audio: np.ndarray) -> float:
-        """Calculate similarity between audio and reference word."""
+        """
+        Calculate similarity between audio and reference word.
+        
+        Uses cosine similarity on MFCC features, combining mean (70% weight)
+        and standard deviation (30% weight) for robustness. The result is
+        scaled to produce intuitive percentage values.
+
+        Args:
+            audio: Audio samples as a 1D numpy array
+            
+        Returns:
+            Similarity percentage (0-100), where 100 is an exact match
+            
+        Raises:
+            ValueError: If no reference word has been set
+        """
         if self.reference_mfcc_mean is None:
             raise ValueError("No reference word set. Call set_reference() first.")
 
         candidate_mfcc_mean, candidate_mfcc_std = self.extract_mfcc(audio)
 
+        # Calculate cosine similarity for mean and std features
+        # cosine() returns distance (0=identical), so we subtract from 1
         sim_mean = 1 - cosine(self.reference_mfcc_mean, candidate_mfcc_mean)
         sim_std = 1 - cosine(self.reference_mfcc_std, candidate_mfcc_std)
 
+        # Weighted combination (mean more important than std)
         combined_similarity = sim_mean * 0.7 + sim_std * 0.3
         similarity_percent = combined_similarity * 100
+        
+        # Non-linear scaling to spread out the similarity values
         scaled_similarity = (similarity_percent**1.5) / (100**0.5)
 
         return scaled_similarity
 
-    def matches(self, audio: np.ndarray, threshold: float = 75) -> tuple:
-        """Check if audio matches reference word."""
+    def matches(self, audio: np.ndarray, threshold: float = 75.0) -> tuple[bool, float]:
+        """
+        Check if audio matches reference word above the threshold.
+        
+        Args:
+            audio: Audio samples as a 1D numpy array
+            threshold: Minimum similarity percentage to consider a match (0-100)
+            
+        Returns:
+            Tuple of (is_match, similarity_percentage)
+        """
         similarity = self.calculate_similarity(audio)
         return similarity >= threshold, similarity
 
