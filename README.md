@@ -9,6 +9,10 @@ EasyWakeWord is a Python module that allows you to create wake word detection sy
 ## Installation
 
 ```bash
+# Using uv (preferred)
+uv add easywakeword
+
+# Or using pip
 pip install easywakeword
 ```
 
@@ -20,6 +24,13 @@ cd EasyWakeWord
 pip install -e .
 ```
 
+## STT Backend Options
+
+EasyWakeWord supports multiple speech-to-text backends:
+
+1. **Bundled mini_transcriber** - Automatically downloads and runs [mini_transcriber](https://github.com/raymondclowe/mini_transcriber) locally (set `stt_backend="bundled"`)
+2. **External Whisper API** - Point to your own running instance of mini_transcriber (set `external_whisper_url`)
+
 ## Usage
 
 ### Basic Usage (Synchronous)
@@ -27,18 +38,35 @@ pip install -e .
 ```python
 from easywakeword import WakeWord
 
-# Create a wake word detector
+# Create a wake word detector with bundled mini_transcriber
 my_wake_word = WakeWord(
     textword="ok google",          # The text phrase to detect
     wavword="okgoogle.wav",        # Path to reference audio file
     numberofwords=2,               # Number of words in the wake phrase
     timeout=30,                    # Timeout in seconds
-    externalwisperurl="http://localhost:8085"  # Optional: external Whisper API URL
+    stt_backend="bundled"          # Auto-download and run mini_transcriber
 )
 
 # Wait for the wake word (blocking call)
 words_received_text = my_wake_word.waitforit()
 print(f"Detected: {words_received_text}")
+```
+
+### Using External Whisper API
+
+```python
+from easywakeword import WakeWord
+
+# Use an external mini_transcriber instance
+my_wake_word = WakeWord(
+    textword="ok google",
+    wavword="okgoogle.wav",
+    numberofwords=2,
+    timeout=30,
+    external_whisper_url="http://localhost:8085"  # Your mini_transcriber URL
+)
+
+words_received_text = my_wake_word.waitforit()
 ```
 
 ### Async Usage (with Callback)
@@ -55,6 +83,7 @@ my_wake_word = WakeWord(
     wavword="heycomputer.wav",
     numberofwords=2,
     timeout=30,
+    stt_backend="bundled",
     callback=on_wake_word_detected
 )
 
@@ -75,7 +104,8 @@ my_wake_word.stop()
 | `wavword` | str | Yes | Path to reference WAV file for MFCC matching |
 | `numberofwords` | int | Yes | Number of words in the wake phrase |
 | `timeout` | int | No | Timeout in seconds (default: 30) |
-| `externalwisperurl` | str | No | URL of external Whisper API for transcription |
+| `external_whisper_url` | str | No | URL of external Whisper API for transcription |
+| `stt_backend` | str | No | STT backend: "bundled" (auto mini_transcriber), or None |
 | `callback` | callable | No | Callback function for async detection |
 
 ## Methods
