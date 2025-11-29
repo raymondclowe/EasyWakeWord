@@ -125,11 +125,12 @@ The README has been updated to represent the production-ready vision. Now we nee
 
 ## 📝 Documentation Improvements Needed
 
-### Code Documentation
-- [ ] Add comprehensive docstrings to all methods
+### Code Documentation - Partial Progress ✓
+- [x] Add comprehensive docstrings to new methods (check_transcriber_health, configure_session, _log)
+- [x] Document constructor parameters with types and descriptions
+- [x] Document exceptions that can be raised (ValueError for invalid params)
 - [ ] Document internal methods with # comments
-- [ ] Add type hints to all functions
-- [ ] Document exceptions that can be raised
+- [ ] Add type hints to remaining functions
 
 ### Example Improvements
 - [ ] Update examples to match README patterns
@@ -144,12 +145,16 @@ The README has been updated to represent the production-ready vision. Now we nee
 
 ## 🧪 Testing Gaps
 
-### Unit Tests Needed
-- [ ] Test MFCC similarity calculation
+### Unit Tests - Partial Progress ✓
+- [x] Test MFCC similarity calculation (in test_wakeword_simulated.py)
+- [x] Test timeout behavior (in test_wakeword_simulated.py)
+- [x] Test input validation (new TestInputValidation class)
+- [x] Test health check method
+- [x] Test session configuration
+- [x] Test verbose logging
 - [ ] Test silence detection logic
 - [ ] Test word segmentation
 - [ ] Test circular buffer wrap-around
-- [ ] Test timeout behavior
 - [ ] Test callback invocation
 - [ ] Test multiple concurrent detectors
 

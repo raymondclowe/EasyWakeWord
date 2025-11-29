@@ -9,6 +9,7 @@ import threading
 
 import numpy as np
 import pytest
+import requests
 import soundfile as sf
 
 from easywakeword.wakeword import AudioDeviceManager, WakeWord, WordMatcher
@@ -397,7 +398,7 @@ class TestNewFeatures:
         generate_wav(str(wavfile))
         
         ww = create_minimal_wakeword(wavfile)
-        ww._session = __import__('requests').Session()
+        ww._session = requests.Session()
         
         # Configure headers
         ww.configure_session(headers={"Authorization": "Bearer test_token"})
@@ -411,11 +412,12 @@ class TestNewFeatures:
         ww = create_minimal_wakeword(wavfile)
         ww._transcriber_url = None
         ww.verbose = False
-        ww._session = __import__('requests').Session()
+        ww._session = requests.Session()
         
         health = ww.check_transcriber_health()
         assert health["healthy"] is True
         assert "MFCC-only" in health["url"]
+        assert "status" in health  # Should have status field, not error
     
     def test_check_transcriber_health_with_unreachable_url(self, tmp_path):
         """Test health check returns unhealthy for unreachable server."""
@@ -425,7 +427,7 @@ class TestNewFeatures:
         ww = create_minimal_wakeword(wavfile)
         ww._transcriber_url = "http://localhost:99999"  # Invalid port
         ww.verbose = False
-        ww._session = __import__('requests').Session()
+        ww._session = requests.Session()
         
         health = ww.check_transcriber_health()
         assert health["healthy"] is False
@@ -478,3 +480,73 @@ class TestNewFeatures:
         
         # Check that message was logged
         assert any("test message" in record.message for record in caplog.records)
+
+
+class TestInputValidation:
+    """Tests for input parameter validation."""
+    
+    def test_invalid_buffer_seconds_zero(self, tmp_path):
+        """Test that buffer_seconds=0 raises ValueError."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        with pytest.raises(ValueError, match="buffer_seconds must be positive"):
+            WakeWord(
+                textword="hello",
+                wavword=str(wavfile),
+                numberofwords=1,
+                buffer_seconds=0
+            )
+    
+    def test_invalid_buffer_seconds_negative(self, tmp_path):
+        """Test that negative buffer_seconds raises ValueError."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        with pytest.raises(ValueError, match="buffer_seconds must be positive"):
+            WakeWord(
+                textword="hello",
+                wavword=str(wavfile),
+                numberofwords=1,
+                buffer_seconds=-5
+            )
+    
+    def test_invalid_retry_count_negative(self, tmp_path):
+        """Test that negative retry_count raises ValueError."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        with pytest.raises(ValueError, match="retry_count must be non-negative"):
+            WakeWord(
+                textword="hello",
+                wavword=str(wavfile),
+                numberofwords=1,
+                retry_count=-1
+            )
+    
+    def test_invalid_retry_backoff_negative(self, tmp_path):
+        """Test that negative retry_backoff raises ValueError."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        with pytest.raises(ValueError, match="retry_backoff must be non-negative"):
+            WakeWord(
+                textword="hello",
+                wavword=str(wavfile),
+                numberofwords=1,
+                retry_backoff=-0.5
+            )
+    
+    def test_retry_count_zero_is_valid(self, tmp_path):
+        """Test that retry_count=0 is valid (means no retries)."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        # Should not raise - 0 retries is valid
+        ww = WakeWord(
+            textword="hello",
+            wavword=str(wavfile),
+            numberofwords=1,
+            retry_count=0
+        )
+        assert ww.retry_count == 0

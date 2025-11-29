@@ -645,12 +645,21 @@ class WakeWord:
                              to the transcription API. Useful for authentication tokens.
             retry_count: Number of retries for transient network failures (default: 3).
             retry_backoff: Initial backoff delay in seconds for retries (default: 0.5).
-                           Uses exponential backoff: delay * 2^attempt.
+                           Uses exponential backoff: retry_backoff * 2^attempt.
 
         Raises:
             FileNotFoundError: If the wavword file does not exist.
-            ValueError: If numberofwords is less than 1.
+            ValueError: If numberofwords is less than 1, buffer_seconds is not positive,
+                        or retry parameters are invalid.
         """
+        # Validate new parameters
+        if buffer_seconds <= 0:
+            raise ValueError("buffer_seconds must be positive")
+        if retry_count < 0:
+            raise ValueError("retry_count must be non-negative")
+        if retry_backoff < 0:
+            raise ValueError("retry_backoff must be non-negative")
+
         self.textword = textword.lower().strip()
         self.wavword = wavword
         self.numberofwords = numberofwords
@@ -736,6 +745,7 @@ class WakeWord:
             - "url": str of the transcriber URL being checked
             - "latency_ms": float response time in milliseconds (if healthy)
             - "error": str error message (if unhealthy)
+            - "status": str status message (if healthy but no transcriber configured)
 
         Example:
             >>> health = detector.check_transcriber_health()
@@ -751,7 +761,7 @@ class WakeWord:
 
         if self._transcriber_url is None:
             result["healthy"] = True
-            result["error"] = "No transcriber configured (MFCC-only mode)"
+            result["status"] = "No transcriber configured (MFCC-only mode)"
             return result
 
         try:
@@ -1112,9 +1122,9 @@ class WakeWord:
                           logging.WARNING)
                 last_error = f"Error: {e}"
 
-            # Exponential backoff before retry
+            # Exponential backoff before retry (capped at 30 seconds)
             if attempt < self.retry_count - 1:
-                backoff_delay = self.retry_backoff * (2 ** attempt)
+                backoff_delay = min(self.retry_backoff * (2 ** attempt), 30.0)
                 self._log(f"Retrying in {backoff_delay:.1f}s...")
                 time.sleep(backoff_delay)
 
