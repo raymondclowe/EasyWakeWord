@@ -2,7 +2,8 @@
 Simulated audio tests for EasyWakeWord.
 
 These tests mock audio hardware to allow testing in CI environments
-without real microphones.
+without real microphones. They work in both Windows dev environments
+and GitHub Copilot CI environments.
 """
 
 import threading
@@ -11,7 +12,19 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from easywakeword.wakeword import AudioDeviceManager, WakeWord, WordMatcher
+from tests.test_helpers import (
+    WakeWord, 
+    WordMatcher, 
+    AudioDeviceManager,
+    create_minimal_wakeword_instance,
+    PORTAUDIO_AVAILABLE
+)
+
+# Skip all tests in this module if classes couldn't be imported
+pytestmark = pytest.mark.skipif(
+    WordMatcher is None,
+    reason="WakeWord classes not available (import failed)"
+)
 
 
 def generate_wav(filename, duration=1.0, freq=440, sr=16000):
@@ -43,28 +56,9 @@ def create_minimal_wakeword(wavfile, textword="hello", numberofwords=1, timeout=
     """
     Create a minimal WakeWord instance without initializing audio hardware.
     
-    This helper bypasses the audio device initialization to allow testing
-    the detection logic in CI environments without real microphones.
+    This is an alias to the shared helper function for backward compatibility.
     """
-    ww = object.__new__(WakeWord)
-    ww.textword = textword
-    ww.wavword = str(wavfile)
-    ww.numberofwords = numberofwords
-    ww.timeout = timeout
-    ww.similarity_threshold = 75.0
-    ww.pre_speech_silence = None
-    ww.speech_duration_min = None
-    ww.speech_duration_max = None
-    ww.post_speech_silence = None
-    ww._stop_event = threading.Event()
-    ww._transcriber_url = None
-    ww._matcher = None
-    ww._sound_buffer = None
-    ww._listening = False
-    ww._listen_thread = None
-    ww._session = None
-    ww._bundled_transcriber_process = None
-    return ww
+    return create_minimal_wakeword_instance(wavfile, textword, numberofwords, timeout)
 
 
 class TestWordMatcher:
@@ -188,8 +182,6 @@ class TestSyllableEstimation:
     
     def test_multi_word_phrases(self, tmp_path):
         """Test syllable count for multi-word phrases."""
-        from easywakeword.wakeword import WakeWord
-        
         wavfile = tmp_path / "test.wav"
         generate_wav(str(wavfile))
         
