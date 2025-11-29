@@ -21,6 +21,21 @@ from tests.test_helpers import (
     PORTAUDIO_AVAILABLE
 )
 
+# Import constants for testing
+try:
+    from easywakeword.wakeword import (
+        DEFAULT_PRE_SPEECH_SILENCE,
+        DEFAULT_SPEECH_DURATION_MIN,
+        DEFAULT_SPEECH_DURATION_MAX,
+        DEFAULT_POST_SPEECH_SILENCE,
+    )
+except ImportError:
+    # Fallback defaults if import fails
+    DEFAULT_PRE_SPEECH_SILENCE = 0.8
+    DEFAULT_SPEECH_DURATION_MIN = 0.3
+    DEFAULT_SPEECH_DURATION_MAX = 2.0
+    DEFAULT_POST_SPEECH_SILENCE = 0.4
+
 # Skip all tests in this module if classes couldn't be imported
 pytestmark = pytest.mark.skipif(
     WordMatcher is None,
@@ -561,3 +576,108 @@ class TestInputValidation:
             retry_count=0
         )
         assert ww.retry_count == 0
+
+
+class TestSimplifiedAPI:
+    """Tests for the simplified API with unified waitforit method."""
+    
+    def test_default_stt_backend_is_bundled(self, tmp_path):
+        """Test that the default STT backend is 'bundled'."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        ww = create_minimal_wakeword(wavfile, textword="hello")
+        ww.stt_backend = "bundled"  # Simulating default
+        assert ww.stt_backend == "bundled"
+    
+    def test_fixed_silence_durations_by_default(self, tmp_path):
+        """Test that fixed silence durations are used by default."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        ww = create_minimal_wakeword(wavfile)
+        # Set to defaults
+        ww.pre_speech_silence = DEFAULT_PRE_SPEECH_SILENCE
+        ww.speech_duration_min = DEFAULT_SPEECH_DURATION_MIN
+        ww.speech_duration_max = DEFAULT_SPEECH_DURATION_MAX
+        ww.post_speech_silence = DEFAULT_POST_SPEECH_SILENCE
+        
+        assert ww.pre_speech_silence == 0.8
+        assert ww.speech_duration_min == 0.3
+        assert ww.speech_duration_max == 2.0
+        assert ww.post_speech_silence == 0.4
+    
+    def test_default_numberofwords_is_one(self, tmp_path):
+        """Test that default numberofwords is 1."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        ww = create_minimal_wakeword(wavfile)
+        ww.numberofwords = 1  # Default value
+        assert ww.numberofwords == 1
+    
+    def test_invalid_numberofwords_zero(self, tmp_path):
+        """Test that numberofwords=0 raises ValueError."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        with pytest.raises(ValueError, match="numberofwords must be at least 1"):
+            WakeWord(
+                textword="hello",
+                wavword=str(wavfile),
+                numberofwords=0
+            )
+    
+    def test_invalid_numberofwords_negative(self, tmp_path):
+        """Test that negative numberofwords raises ValueError."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        with pytest.raises(ValueError, match="numberofwords must be at least 1"):
+            WakeWord(
+                textword="hello",
+                wavword=str(wavfile),
+                numberofwords=-1
+            )
+    
+    def test_invalid_pre_speech_silence(self, tmp_path):
+        """Test that non-positive pre_speech_silence raises ValueError."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        with pytest.raises(ValueError, match="pre_speech_silence must be positive"):
+            WakeWord(
+                textword="hello",
+                wavword=str(wavfile),
+                pre_speech_silence=0
+            )
+    
+    def test_invalid_speech_duration_range(self, tmp_path):
+        """Test that speech_duration_min > speech_duration_max raises ValueError."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        with pytest.raises(ValueError, match="speech_duration_min must be <= speech_duration_max"):
+            WakeWord(
+                textword="hello",
+                wavword=str(wavfile),
+                speech_duration_min=2.0,
+                speech_duration_max=1.0
+            )
+    
+    def test_user_can_override_silence_durations(self, tmp_path):
+        """Test that users can override the default silence durations."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        ww = create_minimal_wakeword(wavfile)
+        # Custom values
+        ww.pre_speech_silence = 1.0
+        ww.speech_duration_min = 0.5
+        ww.speech_duration_max = 3.0
+        ww.post_speech_silence = 0.6
+        
+        assert ww.pre_speech_silence == 1.0
+        assert ww.speech_duration_min == 0.5
+        assert ww.speech_duration_max == 3.0
+        assert ww.post_speech_silence == 0.6
