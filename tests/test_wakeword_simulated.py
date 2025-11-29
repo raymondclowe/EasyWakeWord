@@ -681,3 +681,94 @@ class TestSimplifiedAPI:
         assert ww.speech_duration_min == 0.5
         assert ww.speech_duration_max == 3.0
         assert ww.post_speech_silence == 0.6
+
+
+class TestAutoCalculateSpeechDurations:
+    """Tests for auto-calculation of speech_duration_min and speech_duration_max."""
+    
+    def test_auto_calculate_min_from_wav(self, tmp_path):
+        """Test that speech_duration_min is auto-calculated from WAV file duration."""
+        wavfile = tmp_path / "test.wav"
+        # Generate 0.8 second speech-like audio
+        generate_speech_like_audio(str(wavfile), duration=0.8)
+        
+        ww = create_minimal_wakeword_instance(wavfile=str(wavfile))
+        
+        # speech_duration_min should be approximately the WAV speech duration
+        # (may vary slightly due to voice activity detection)
+        assert 0.4 <= ww.speech_duration_min <= 1.2
+        assert ww._user_speech_duration_min is None
+    
+    def test_auto_calculate_max_as_double_min(self, tmp_path):
+        """Test that speech_duration_max is auto-calculated as 2x speech_duration_min."""
+        wavfile = tmp_path / "test.wav"
+        generate_speech_like_audio(str(wavfile), duration=0.5)
+        
+        ww = create_minimal_wakeword_instance(wavfile=str(wavfile))
+        
+        # speech_duration_max should be 2x speech_duration_min
+        assert abs(ww.speech_duration_max - ww.speech_duration_min * 2) < 0.001
+        assert ww._user_speech_duration_max is None
+    
+    def test_user_override_min_auto_calculate_max(self, tmp_path):
+        """Test that user can override min while max is auto-calculated as 2x min."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        ww = create_minimal_wakeword_instance(
+            wavfile=str(wavfile),
+            speech_duration_min=0.5
+        )
+        
+        assert ww.speech_duration_min == 0.5
+        assert ww.speech_duration_max == 1.0  # 2x min
+        assert ww._user_speech_duration_min == 0.5
+        assert ww._user_speech_duration_max is None
+    
+    def test_user_override_both(self, tmp_path):
+        """Test that user can override both min and max."""
+        wavfile = tmp_path / "test.wav"
+        generate_wav(str(wavfile))
+        
+        ww = create_minimal_wakeword_instance(
+            wavfile=str(wavfile),
+            speech_duration_min=0.4,
+            speech_duration_max=1.5
+        )
+        
+        assert ww.speech_duration_min == 0.4
+        assert ww.speech_duration_max == 1.5
+        assert ww._user_speech_duration_min == 0.4
+        assert ww._user_speech_duration_max == 1.5
+    
+    def test_fallback_to_defaults_when_wav_analysis_fails(self, tmp_path):
+        """Test that fallback defaults are used when WAV analysis fails."""
+        # Create a minimal/problematic WAV file (very short)
+        wavfile = tmp_path / "minimal.wav"
+        # Very short audio that may not analyze well
+        sf.write(str(wavfile), np.zeros(100, dtype=np.float32), 16000)
+        
+        ww = create_minimal_wakeword_instance(wavfile=str(wavfile))
+        
+        # Should fall back to default if analysis fails or returns None
+        # Either way, both values should be set and positive
+        assert ww.speech_duration_min > 0
+        assert ww.speech_duration_max > 0
+        assert ww.speech_duration_max >= ww.speech_duration_min
+    
+    def test_auto_calculate_with_reference_wav(self):
+        """Test auto-calculation with the repository's reference_word.wav file."""
+        import os
+        ref_wav = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), 
+            "reference_word.wav"
+        )
+        if not os.path.exists(ref_wav):
+            pytest.skip("reference_word.wav not found")
+        
+        ww = create_minimal_wakeword_instance(wavfile=ref_wav)
+        
+        # Reference WAV is ~0.97s, so min should be around that
+        assert 0.3 <= ww.speech_duration_min <= 1.5
+        # Max should be 2x min
+        assert abs(ww.speech_duration_max - ww.speech_duration_min * 2) < 0.001

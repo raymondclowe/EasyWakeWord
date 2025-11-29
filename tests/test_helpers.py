@@ -62,7 +62,9 @@ def get_wakeword_classes():
 WakeWord, WordMatcher, AudioDeviceManager, SoundBuffer = get_wakeword_classes()
 
 
-def create_minimal_wakeword_instance(wavfile, textword="hello", numberofwords=1, timeout=1):
+def create_minimal_wakeword_instance(wavfile, textword="hello", numberofwords=1, timeout=1,
+                                     speech_duration_min=None, speech_duration_max=None,
+                                     verbose=False):
     """
     Create a minimal WakeWord instance without initializing audio hardware.
     
@@ -74,6 +76,9 @@ def create_minimal_wakeword_instance(wavfile, textword="hello", numberofwords=1,
         textword: Text of the wake word
         numberofwords: Number of words in the phrase
         timeout: Detection timeout in seconds
+        speech_duration_min: Minimum speech duration (None for auto-calculate)
+        speech_duration_max: Maximum speech duration (None for auto-calculate)
+        verbose: Enable verbose logging
         
     Returns:
         WakeWord instance with mocked audio components
@@ -87,10 +92,20 @@ def create_minimal_wakeword_instance(wavfile, textword="hello", numberofwords=1,
     ww.numberofwords = numberofwords
     ww.timeout = timeout
     ww.similarity_threshold = 75.0
-    ww.pre_speech_silence = None
-    ww.speech_duration_min = None
-    ww.speech_duration_max = None
-    ww.post_speech_silence = None
+    ww.pre_speech_silence = 0.8
+    ww.post_speech_silence = 0.4
+    ww.buffer_seconds = 10
+    ww.verbose = verbose
+    ww.retry_count = 3
+    ww.retry_backoff = 0.5
+    
+    # Store user-provided values for auto-calculation
+    ww._user_speech_duration_min = speech_duration_min
+    ww._user_speech_duration_max = speech_duration_max
+    
+    # Perform auto-calculation of speech durations
+    ww._auto_calculate_speech_durations()
+    
     ww._stop_event = threading.Event()
     ww._transcriber_url = None
     ww._matcher = None
