@@ -131,8 +131,9 @@ class TestCrossPlatformFileHandling:
         assert loaded_sr == sample_rate
         assert len(loaded_audio) == len(audio)
         
-        # Values should be close - WAV encoding may cause small precision loss
-        # (default WAV format uses 16-bit PCM which has ~5e-5 precision)
+        # WAV file round-trip precision: default soundfile WAV format uses 16-bit PCM
+        # which quantizes to ~1/32768 ≈ 3e-5 precision. Using decimal=4 (~1e-4)
+        # provides safe margin for this encoding precision loss.
         np.testing.assert_array_almost_equal(
             audio, loaded_audio.astype(np.float32), decimal=4
         )
