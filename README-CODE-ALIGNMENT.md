@@ -129,14 +129,14 @@ The README has been updated to represent the production-ready vision. Now we nee
 - [x] Add comprehensive docstrings to new methods (check_transcriber_health, configure_session, _log)
 - [x] Document constructor parameters with types and descriptions
 - [x] Document exceptions that can be raised (ValueError for invalid params)
-- [ ] Document internal methods with # comments
-- [ ] Add type hints to remaining functions
+- [x] Document internal methods with # comments (WordMatcher class documented)
+- [x] Add type hints to remaining functions (WordMatcher class has full type hints)
 
 ### Example Improvements
-- [ ] Update examples to match README patterns
-- [ ] Add example for each README use case
-- [ ] Add example for creating reference audio
-- [ ] Add example for tuning similarity threshold
+- [x] Update examples to match README patterns (basic_sync.py, async_callback.py, cloud_whisper.py, lan_whisper.py)
+- [x] Add example for each README use case (device_selection.py covers device selection cases)
+- [x] Add example for creating reference audio (examples/record_reference.py)
+- [x] Add example for tuning similarity threshold (examples/tune_threshold.py)
 
 ### Testing Documentation
 - [ ] Document test strategy
@@ -152,10 +152,10 @@ The README has been updated to represent the production-ready vision. Now we nee
 - [x] Test health check method
 - [x] Test session configuration
 - [x] Test verbose logging
-- [ ] Test silence detection logic
-- [ ] Test word segmentation
+- [x] Test silence detection logic (TestSilenceDetectionLogic class)
+- [x] Test word segmentation (TestWordSegmentation class)
 - [ ] Test circular buffer wrap-around
-- [ ] Test callback invocation
+- [x] Test callback invocation (TestCallbackInvocation class)
 - [ ] Test multiple concurrent detectors
 
 ### Integration Tests Needed
@@ -220,5 +220,5 @@ README-Code alignment is complete when:
 
 ---
 
-**Last Updated**: 2024-11-29
-**Status**: Documentation complete, verification phase starting
+**Last Updated**: 2024-11-30
+**Status**: Examples updated, documentation improved, new tests added for stability

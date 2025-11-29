@@ -26,9 +26,12 @@ Requirements:
 
 import argparse
 import io
+import os
+import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 import librosa
 import numpy as np
@@ -37,7 +40,7 @@ import sounddevice as sd
 import soundfile as sf
 
 from easywakeword import WakeWord
-from easywakeword.wakeword import AudioDeviceManager
+from easywakeword.wakeword import AudioDeviceManager, DEFAULT_MINI_TRANSCRIBER_PORT, MINI_TRANSCRIBER_REPO
 
 
 def play_confirmation_chime():
@@ -121,7 +124,7 @@ def list_and_select_device():
         return None
 
 
-def transcribe_reference_wav(wav_path: str, whisper_url: str) -> str:
+def transcribe_reference_wav(wav_path: str, whisper_url: str) -> Optional[str]:
     """
     Transcribe a reference WAV file using the LAN Whisper server.
     
@@ -230,7 +233,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    # Use default settings (server at localhost:8085)
+    # Use default settings (bundled Whisper)
     python examples/sound_poc.py
     
     # Specify custom server URL
@@ -246,8 +249,8 @@ Examples:
     
     parser.add_argument(
         '--url',
-        default='http://localhost:8085',
-        help='URL of the Whisper transcription server (default: http://localhost:8085)'
+        default=None,
+        help='URL of the Whisper transcription server (default: use bundled mini_transcriber)'
     )
     parser.add_argument(
         '--wav',
@@ -282,11 +285,6 @@ Examples:
         action='store_true',
         help='Skip checking if the Whisper server is available'
     )
-    parser.add_argument(
-        '--mfcc-only',
-        action='store_true',
-        help='Use MFCC matching only (no transcription confirmation)'
-    )
     
     args = parser.parse_args()
     
@@ -309,24 +307,46 @@ Examples:
             print("Or create one by recording your wake word.")
             sys.exit(1)
     
-    whisper_url = args.url if not args.mfcc_only else None
+    # Determine STT backend
+    if args.url:
+        stt_backend = None
+        external_whisper_url = args.url
+        whisper_url = args.url
+        whisper_desc = f"External server: {args.url}"
+    else:
+        stt_backend = "bundled"
+        external_whisper_url = None
+        whisper_url = f"http://localhost:{DEFAULT_MINI_TRANSCRIBER_PORT}"
+        whisper_desc = "Bundled mini_transcriber"
     
     # Check server health (unless skipped or MFCC-only mode)
-    if whisper_url and not args.skip_server_check:
+    if external_whisper_url and not args.skip_server_check:
         print("\nChecking Whisper server...")
-        if not check_server_health(whisper_url):
+        if not check_server_health(external_whisper_url):
             print("\nOptions:")
             print("  1. Start mini_transcriber on your server")
             print("  2. Use --skip-server-check to skip this check")
-            print("  3. Use --mfcc-only to run without transcription")
             print("\nContinuing without transcription confirmation...")
-            whisper_url = None
+            external_whisper_url = None
+            stt_backend = "bundled"  # Fall back to bundled
     
     # Transcribe reference WAV to determine wake word
     wake_word_text = args.text
     if wake_word_text is None:
-        if whisper_url:
-            transcription = transcribe_reference_wav(str(wav_path), whisper_url)
+        if stt_backend == "bundled":
+            if WakeWord.ensure_bundled_transcriber():
+                transcription = transcribe_reference_wav(str(wav_path), whisper_url)
+                if transcription:
+                    wake_word_text = transcription.strip().lower().rstrip('.,!?;:')
+                    print(f"Detected wake word: '{wake_word_text}'")
+                else:
+                    print("Could not transcribe reference, using 'computer' as default")
+                    wake_word_text = "computer"
+            else:
+                print("Could not start bundled transcriber, using 'computer' as default")
+                wake_word_text = "computer"
+        elif external_whisper_url:
+            transcription = transcribe_reference_wav(str(wav_path), external_whisper_url)
             if transcription:
                 wake_word_text = transcription.strip().lower().rstrip('.,!?;:')
                 print(f"Detected wake word: '{wake_word_text}'")
@@ -346,7 +366,7 @@ Examples:
     print(f"  Wake word: '{wake_word_text}'")
     print(f"  Word count: {args.words}")
     print(f"  Reference WAV: {wav_path}")
-    print(f"  Whisper URL: {whisper_url or 'None (MFCC-only mode)'}")
+    print(f"  Whisper: {whisper_desc}")
     print(f"  Device: {device_index if device_index is not None else 'default'}")
     print(f"  Threshold: {args.threshold}")
     print(f"  Timeout: {args.timeout}s")
@@ -358,10 +378,10 @@ Examples:
         wavword=str(wav_path),
         numberofwords=args.words,
         timeout=args.timeout,
-        external_whisper_url=whisper_url,
+        external_whisper_url=external_whisper_url,
         device=device_index,
         similarity_threshold=args.threshold,
-        callback=on_wake_word_detected
+        stt_backend=stt_backend
     )
     
     print("\n" + "=" * 60)
@@ -371,16 +391,14 @@ Examples:
     print("Press Ctrl+C to stop")
     print("=" * 60 + "\n")
     
-    # Start listening
-    detector.start()
-    
+    # Wait for wake word detection
     try:
-        # Keep running until interrupted
-        while True:
-            time.sleep(1)
-            if not detector.is_listening():
-                print("Detector stopped unexpectedly")
-                break
+        result = detector.waitforit()
+        print(f"\n✓ WAKE WORD DETECTED: '{result}'")
+        play_confirmation_chime()
+        print("Detection complete!")
+    except TimeoutError:
+        print(f"\nTimeout: No wake word detected within {args.timeout} seconds")
     except KeyboardInterrupt:
         print("\n\nStopping...")
     finally:

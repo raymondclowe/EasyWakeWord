@@ -106,6 +106,15 @@ def create_minimal_wakeword_instance(wavfile, textword="hello", numberofwords=1,
     # Perform auto-calculation of speech durations
     ww._auto_calculate_speech_durations()
     
+    ww.pre_speech_silence = None
+    ww.speech_duration_min = None
+    ww.speech_duration_max = None
+    ww.post_speech_silence = None
+    ww.buffer_seconds = 10
+    ww.verbose = False
+    ww.retry_count = 3
+    ww.retry_backoff = 0.5
+    ww.callback = None
     ww._stop_event = threading.Event()
     ww._transcriber_url = None
     ww._matcher = None
