@@ -607,14 +607,14 @@ class TestSimplifiedAPI:
         assert ww.speech_duration_max == 2.0
         assert ww.post_speech_silence == 0.4
     
-    def test_default_numberofwords_is_one(self, tmp_path):
-        """Test that default numberofwords is 1."""
+    def test_default_numberofwords_is_two(self, tmp_path):
+        """Test that default numberofwords is 2 (two-word phrases recommended)."""
         wavfile = tmp_path / "test.wav"
         generate_wav(str(wavfile))
         
         ww = create_minimal_wakeword(wavfile)
-        ww.numberofwords = 1  # Default value
-        assert ww.numberofwords == 1
+        ww.numberofwords = 2  # Default value
+        assert ww.numberofwords == 2
     
     def test_invalid_numberofwords_zero(self, tmp_path):
         """Test that numberofwords=0 raises ValueError."""

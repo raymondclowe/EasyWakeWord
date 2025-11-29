@@ -582,25 +582,29 @@ class WakeWord:
     3. Whisper transcription - Final confirmation with word count validation
 
     Whisper transcription is always used for reliable detection (bundled by default).
-    The reference WAV should ideally be a single word for best results.
+    
+    Recommended usage: Use a 2-word phrase (e.g., "ok computer") but record only the
+    main/major word (e.g., "computer") for the reference WAV. This provides better
+    practical results even though it's suboptimal for MFCC similarity checking.
 
     STT Backends:
     - "bundled" (default): Auto-downloads and runs mini_transcriber locally
     - "external": Uses an external Whisper API at the specified URL
 
     Example:
-        >>> # Single word detection (recommended)
+        >>> # Two-word phrase with main word reference (recommended)
         >>> detector = WakeWord(
-        ...     textword="hello",
-        ...     wavword="hello.wav"
+        ...     textword="ok computer",
+        ...     wavword="computer.wav",  # Only the main word
+        ...     numberofwords=2
         ... )
         >>> detector.waitforit()  # Blocking detection
-        'hello'
+        'ok computer'
 
         >>> # Multi-word detection with external Whisper
         >>> detector = WakeWord(
         ...     textword="hey assistant",
-        ...     wavword="hey_assistant.wav",
+        ...     wavword="assistant.wav",  # Only the main word
         ...     numberofwords=2,
         ...     stt_backend="external",
         ...     external_whisper_url="http://localhost:8085"
@@ -611,7 +615,7 @@ class WakeWord:
         self,
         textword: str,
         wavword: str,
-        numberofwords: int = 1,
+        numberofwords: int = 2,
         timeout: int = 30,
         external_whisper_url: Optional[str] = None,
         callback: Optional[Callable[[str], None]] = None,
@@ -637,12 +641,17 @@ class WakeWord:
         3. Whisper transcription - Final confirmation with word count validation
 
         By default, the bundled Whisper backend is used for transcription.
-        The reference WAV should ideally be a single word for best results.
+        
+        Recommended: Use a 2-word phrase (e.g., "ok computer") but record only the
+        main word (e.g., "computer") for the reference WAV. This works better in 
+        practice even though it's suboptimal for MFCC similarity checking.
 
         Args:
-            textword: The text phrase to detect (e.g., "hello" or "hey device")
-            wavword: Path to reference WAV file for MFCC matching (single word recommended)
-            numberofwords: Number of words expected in the wake phrase (default: 1).
+            textword: The text phrase to detect (e.g., "ok computer")
+            wavword: Path to reference WAV file for MFCC matching. Should contain
+                     only the main/major word of the phrase (e.g., "computer.wav"
+                     for "ok computer"). This provides better practical results.
+            numberofwords: Number of words expected in the wake phrase (default: 2).
                            Used to filter/validate Whisper transcription output.
             timeout: Timeout in seconds (default: 30)
             external_whisper_url: URL of external Whisper API for transcription

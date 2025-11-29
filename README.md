@@ -10,7 +10,7 @@ EasyWakeWord provides robust wake word detection with:
 
 - **Three-level checking** - Silence/speech timing → MFCC matching → Whisper confirmation
 - **Bundled Whisper** - Auto-downloads mini_transcriber on first use (no setup required)
-- **Single-word focus** - Optimized for single-word wake words (recommended)
+- **Two-word phrase focus** - Use phrases like "ok computer" with the main word as reference WAV
 - **Fixed defaults** - Sensible silence durations out of the box, user-overridable
 - **Cross-platform support** - Windows, Linux, macOS
 
@@ -34,35 +34,37 @@ pip install -e .
 
 ## Quick Start
 
-### Basic Example (Single Word - Recommended)
+### Basic Example (Two-Word Phrase - Recommended)
 
 ```python
 from easywakeword import WakeWord
 
-# Single word detection (simplest usage)
+# Two-word phrase with main word as reference WAV (recommended)
+# The WAV file should contain only the main word ("computer")
+# but the full phrase ("ok computer") is used for Whisper validation
 detector = WakeWord(
-    textword="hello",
-    wavword="hello.wav"
+    textword="ok computer",
+    wavword="computer.wav"  # Only the main word
 )
 
-print("Listening for 'hello'...")
+print("Listening for 'ok computer'...")
 detected = detector.waitforit()
 print(f"Detected: {detected}")
 ```
 
-### Multi-Word Detection
+### Single Word Detection
 
 ```python
 from easywakeword import WakeWord
 
-# Multi-word detection
+# Single word detection (less reliable but simpler)
 detector = WakeWord(
-    textword="hey device",
-    wavword="hey_device.wav",
-    numberofwords=2
+    textword="hello",
+    wavword="hello.wav",
+    numberofwords=1
 )
 
-print("Listening for 'hey device'...")
+print("Listening for 'hello'...")
 detected = detector.waitforit()
 print(f"Detected: {detected}")
 ```
@@ -77,8 +79,8 @@ def on_wake_word(text):
     print(f"Wake word detected: {text}")
 
 detector = WakeWord(
-    textword="hello",
-    wavword="hello.wav",
+    textword="ok computer",
+    wavword="computer.wav",  # Only the main word
     callback=on_wake_word
 )
 
@@ -98,7 +100,7 @@ finally:
 WakeWord(
     textword: str,
     wavword: str,
-    numberofwords: int = 1,
+    numberofwords: int = 2,
     timeout: int = 30,
     external_whisper_url: Optional[str] = None,
     callback: Optional[Callable[[str], None]] = None,
@@ -121,9 +123,9 @@ WakeWord(
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `textword` | str | Required | The text phrase to detect (e.g., "hello") |
-| `wavword` | str | Required | Path to reference WAV file for MFCC matching (single word recommended) |
-| `numberofwords` | int | 1 | Number of words expected in the transcription. Used to validate Whisper output. |
+| `textword` | str | Required | The full text phrase to detect (e.g., "ok computer") |
+| `wavword` | str | Required | Path to reference WAV file containing only the main word (e.g., "computer.wav" for "ok computer") |
+| `numberofwords` | int | 2 | Number of words expected in the transcription. Used to validate Whisper output. |
 | `timeout` | int | 30 | Timeout in seconds for detection |
 | `stt_backend` | str | "bundled" | STT backend: `"bundled"` (auto mini_transcriber) or `"external"` (use external_whisper_url) |
 | `external_whisper_url` | str | None | URL of external Whisper API (only used when stt_backend="external") |
