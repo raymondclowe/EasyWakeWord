@@ -25,12 +25,16 @@ Requirements:
 """
 
 import argparse
+import io
 import sys
 import time
 from pathlib import Path
 
+import librosa
 import numpy as np
+import requests
 import sounddevice as sd
+import soundfile as sf
 
 from easywakeword import WakeWord
 from easywakeword.wakeword import AudioDeviceManager
@@ -128,10 +132,6 @@ def transcribe_reference_wav(wav_path: str, whisper_url: str) -> str:
     Returns:
         Transcribed text or None if failed
     """
-    import io
-    import requests
-    import soundfile as sf
-    
     print(f"\nTranscribing reference file: {wav_path}")
     print(f"Using server: {whisper_url}")
     
@@ -141,7 +141,6 @@ def transcribe_reference_wav(wav_path: str, whisper_url: str) -> str:
         
         # Resample to 16kHz if needed
         if sample_rate != 16000:
-            import librosa
             audio_data = librosa.resample(audio_data, orig_sr=sample_rate, target_sr=16000)
             sample_rate = 16000
         
@@ -202,8 +201,6 @@ def check_server_health(whisper_url: str) -> bool:
     Returns:
         True if server is healthy, False otherwise
     """
-    import requests
-    
     try:
         response = requests.get(f"{whisper_url}/health", timeout=5)
         if response.status_code == 200:
