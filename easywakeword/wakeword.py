@@ -42,9 +42,16 @@ DEFAULT_RETRY_BACKOFF = 0.5  # Initial retry delay in seconds
 # These are fixed values that work well for typical wake words
 # Users can override these if needed
 DEFAULT_PRE_SPEECH_SILENCE = 0.8
-DEFAULT_SPEECH_DURATION_MIN = 0.3
-DEFAULT_SPEECH_DURATION_MAX = 2.0
+DEFAULT_SPEECH_DURATION_MIN = 0.3  # Fallback value if auto-calculation fails
+DEFAULT_SPEECH_DURATION_MAX = 2.0  # Fallback value if auto-calculation fails
 DEFAULT_POST_SPEECH_SILENCE = 0.4
+
+# Sentinel value to indicate auto-calculation should be used
+AUTO_CALCULATE = None
+
+# Voice activity detection constants
+VOICE_ACTIVITY_THRESHOLD = 0.1  # Fraction of peak energy to consider as voice
+MIN_DETECTED_DURATION = 0.2  # Minimum duration to return from voice detection (seconds)
 
 
 class AudioDeviceManager:
@@ -789,8 +796,8 @@ class WakeWord:
         similarity_threshold: float = 75.0,
         stt_backend: str = "bundled",
         pre_speech_silence: float = DEFAULT_PRE_SPEECH_SILENCE,
-        speech_duration_min: float = DEFAULT_SPEECH_DURATION_MIN,
-        speech_duration_max: float = DEFAULT_SPEECH_DURATION_MAX,
+        speech_duration_min: Optional[float] = AUTO_CALCULATE,
+        speech_duration_max: Optional[float] = AUTO_CALCULATE,
         post_speech_silence: float = DEFAULT_POST_SPEECH_SILENCE,
         buffer_seconds: int = DEFAULT_BUFFER_SECONDS,
         verbose: bool = False,
@@ -836,12 +843,14 @@ class WakeWord:
                          - "external": Use external_whisper_url for transcription
             pre_speech_silence: Minimum silence duration before speech starts (seconds).
                                 Default: 0.8s. Override for custom tuning.
-            speech_duration_min: Minimum speech duration in seconds (default: 0.3s).
-                                 Override for custom tuning.
-            speech_duration_max: Maximum speech duration in seconds (default: 2.0s).
-                                 Override for custom tuning.
+            speech_duration_min: Minimum speech duration in seconds. Default: None (auto-calculated
+                                 from the speech duration in the reference WAV file). Falls back
+                                 to 0.3s if auto-calculation fails. Override for custom tuning.
+            speech_duration_max: Maximum speech duration in seconds. Default: None (auto-calculated
+                                 as 2x speech_duration_min). Falls back to 2.0s if auto-calculation
+                                 fails. Override for custom tuning.
             post_speech_silence: Minimum silence duration after speech ends (seconds).
-                                 Default: 0.4s. Override for custom tuning.
+                                Default: 0.4s. Override for custom tuning.
             buffer_seconds: Audio buffer size in seconds (default: 10). Larger buffers use
                             more memory but allow detection of longer wake phrases.
             verbose: Enable verbose logging output (default: False). When True, logs detailed
@@ -868,11 +877,13 @@ class WakeWord:
             raise ValueError("retry_backoff must be non-negative")
         if pre_speech_silence <= 0:
             raise ValueError("pre_speech_silence must be positive")
-        if speech_duration_min <= 0:
+        # speech_duration_min/max can be None (auto-calculate) or positive values
+        if speech_duration_min is not None and speech_duration_min <= 0:
             raise ValueError("speech_duration_min must be positive")
-        if speech_duration_max <= 0:
+        if speech_duration_max is not None and speech_duration_max <= 0:
             raise ValueError("speech_duration_max must be positive")
-        if speech_duration_min > speech_duration_max:
+        if (speech_duration_min is not None and speech_duration_max is not None and
+            speech_duration_min > speech_duration_max):
             raise ValueError("speech_duration_min must be <= speech_duration_max")
         if post_speech_silence <= 0:
             raise ValueError("post_speech_silence must be positive")
@@ -891,12 +902,16 @@ class WakeWord:
         self.retry_count = retry_count
         self.retry_backoff = retry_backoff
 
-        # Use the provided fixed silence durations directly
-        # (auto-calculation methods are kept for backwards compatibility but not called)
+        # Store user-provided values (may be None for auto-calculation)
+        self._user_speech_duration_min = speech_duration_min
+        self._user_speech_duration_max = speech_duration_max
+
+        # Set fixed silence durations
         self.pre_speech_silence = pre_speech_silence
-        self.speech_duration_min = speech_duration_min
-        self.speech_duration_max = speech_duration_max
         self.post_speech_silence = post_speech_silence
+
+        # Auto-calculate speech duration parameters from WAV file if not provided
+        self._auto_calculate_speech_durations()
 
         self._sound_buffer: Optional[SoundBuffer] = None
         self._matcher: Optional[WordMatcher] = None
@@ -926,6 +941,53 @@ class WakeWord:
         """
         if self.verbose:
             logger.log(level, message)
+
+    def _auto_calculate_speech_durations(self) -> None:
+        """
+        Auto-calculate speech_duration_min and speech_duration_max from WAV file.
+
+        - If speech_duration_min was not provided (None), analyze the reference WAV
+          file to determine actual speech duration and use that value.
+        - If speech_duration_max was not provided (None), set it to 2x speech_duration_min.
+        - Falls back to DEFAULT values if auto-calculation fails.
+        """
+        # If user provided both values explicitly, use them
+        if (self._user_speech_duration_min is not None and
+            self._user_speech_duration_max is not None):
+            self.speech_duration_min = self._user_speech_duration_min
+            self.speech_duration_max = self._user_speech_duration_max
+            self._log(f"Using user-provided speech durations: min={self.speech_duration_min}s, "
+                     f"max={self.speech_duration_max}s")
+            return
+
+        # Try to auto-calculate speech_duration_min from WAV file
+        if self._user_speech_duration_min is None:
+            analyzed_duration = self._analyze_reference_audio_duration()
+            if analyzed_duration is not None:
+                self.speech_duration_min = analyzed_duration
+                self._log(f"Auto-calculated speech_duration_min from WAV: {self.speech_duration_min:.3f}s")
+            else:
+                self.speech_duration_min = DEFAULT_SPEECH_DURATION_MIN
+                self._log(f"Could not analyze WAV, using default speech_duration_min: "
+                         f"{self.speech_duration_min}s", logging.WARNING)
+        else:
+            self.speech_duration_min = self._user_speech_duration_min
+            self._log(f"Using user-provided speech_duration_min: {self.speech_duration_min}s")
+
+        # Auto-calculate speech_duration_max as 2x min if not provided
+        if self._user_speech_duration_max is None:
+            self.speech_duration_max = self.speech_duration_min * 2
+            self._log(f"Auto-calculated speech_duration_max as 2x min: {self.speech_duration_max:.3f}s")
+        else:
+            self.speech_duration_max = self._user_speech_duration_max
+            self._log(f"Using user-provided speech_duration_max: {self.speech_duration_max}s")
+
+        # Final validation: ensure min <= max
+        if self.speech_duration_min > self.speech_duration_max:
+            self._log(f"Warning: speech_duration_min ({self.speech_duration_min}) > "
+                     f"speech_duration_max ({self.speech_duration_max}), adjusting max",
+                     logging.WARNING)
+            self.speech_duration_max = self.speech_duration_min * 2
 
     def configure_session(self, headers: Optional[Dict[str, str]] = None,
                           auth: Optional[tuple] = None) -> None:
@@ -1064,7 +1126,7 @@ class WakeWord:
             rms = librosa.feature.rms(y=audio, frame_length=frame_length, hop_length=hop_length)[0]
 
             # Find frames above a threshold (relative to the max RMS)
-            threshold = np.max(rms) * 0.1  # 10% of peak energy
+            threshold = np.max(rms) * VOICE_ACTIVITY_THRESHOLD
             voice_frames = rms > threshold
 
             # Find contiguous voice segments
@@ -1076,7 +1138,7 @@ class WakeWord:
 
                 # Convert to time
                 duration = (end_frame - start_frame) * hop_length / SoundBuffer.FREQUENCY
-                return max(duration, 0.2)  # Minimum 200ms to avoid too short detections
+                return max(duration, MIN_DETECTED_DURATION)
 
         except Exception as e:
             self._log(f"Could not analyze reference audio duration: {e}", logging.WARNING)
