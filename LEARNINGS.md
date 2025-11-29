@@ -60,6 +60,20 @@
 - CPU usage: 2-5% steady-state
 - Buffer: 10 second rolling window (configurable)
 
+## Bugs Fixed (2024-11)
+
+### Code Issues Fixed
+1. **Duplicate Union import** in wakeword.py line 20 - removed duplicate
+2. **`stop()` and `__del__` crash** on partially initialized objects - added hasattr checks
+3. **device_utils.py print statements** missing f-string format (lines 66-68)
+4. **device_utils.py formatting** - missing blank line before `if __name__`
+5. **README orphaned code** - line 55 had stray `living_room_detector.start()`
+6. **README duplicate parameter** - `stt_backend` listed twice in API Reference table
+
+### Testing Issues Fixed
+1. **test_wakeword_simulated.py** tried to init real audio - rewrote to test components in isolation
+2. **test_mfcc_match** tests couldn't run in CI - removed dependency on audio hardware
+
 ## Future Enhancements (From README Review)
 
 ### Code Improvements Needed
@@ -70,6 +84,13 @@
 5. Add metrics/telemetry (detection rate, latency, false positives) [not implemented]
 6. Add health check method for transcription service [not implemented]
 7. Add retry logic for transient network failures [not implemented]
+
+### MFCC Matching Observations
+- Self-match always returns 100% similarity ✓
+- **Different frequencies can still match with 89%+ similarity** - may need threshold tuning
+- **Random noise can match with 77%+ similarity** - higher thresholds recommended
+- **Silence causes NaN** in cosine similarity (division by zero) - defensive code needed
+- Scale-invariant to some extent, but amplitude changes affect similarity
 
 ### Documentation Improvements
 1. Add video tutorial for creating reference audio [not implemented]
@@ -82,6 +103,14 @@
 2. Add performance benchmarks [not implemented]
 3. Add multi-platform CI (Windows, Linux, macOS) [not implemented]
 4. Add stress tests (continuous operation, memory leaks) [not implemented]
+5. **Add simulated audio tests** [implemented - 18 tests now pass in CI]
+
+## CI Environment Notes
+
+- **PortAudio not available** - tests requiring real audio hardware will fail
+- **No audio input devices** - AudioDeviceManager returns None/warnings
+- **librosa deprecation warnings** - audioread fallback used, will be removed in v1.0
+- Tests using `object.__new__(WakeWord)` to bypass audio init work reliably
 
 ## Development Workflow
 

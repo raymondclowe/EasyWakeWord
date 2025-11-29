@@ -63,9 +63,9 @@ def test_device(device_spec: Optional[Union[int, str]] = None):
         peak = np.max(np.abs(audio_data))
 
         print("Recording complete!")
-        print(".4f")
-        print(".4f")
-        print(".1f")
+        print(f"RMS Level: {rms:.4f}")
+        print(f"Peak Level: {peak:.4f}")
+        print("SNR Estimate: N/A (not implemented)")
 
         # Check if audio levels seem reasonable
         if rms < 0.001:
@@ -127,5 +127,7 @@ Examples:
 
         success = test_device(device_spec)
         sys.exit(0 if success else 1)
+
+
 if __name__ == '__main__':
     main()

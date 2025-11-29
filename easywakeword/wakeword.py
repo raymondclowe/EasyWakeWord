@@ -17,7 +17,7 @@ import sys
 import threading
 import time
 import re
-from typing import Callable, Optional, Union, Union
+from typing import Callable, Optional, Union
 
 import librosa
 import numpy as np
@@ -1107,15 +1107,17 @@ class WakeWord:
 
     def stop(self) -> None:
         """Stop the background listening thread and clean up resources."""
-        self._stop_event.set()
-        if self._listen_thread and self._listen_thread.is_alive():
+        if hasattr(self, '_stop_event') and self._stop_event:
+            self._stop_event.set()
+        if hasattr(self, '_listen_thread') and self._listen_thread and self._listen_thread.is_alive():
             self._listen_thread.join(timeout=2.0)
-        if self._sound_buffer:
+        if hasattr(self, '_sound_buffer') and self._sound_buffer:
             self._sound_buffer.stop()
-        self._listening = False
+        if hasattr(self, '_listening'):
+            self._listening = False
 
         # Stop bundled transcriber if we started it
-        if self._bundled_transcriber_process:
+        if hasattr(self, '_bundled_transcriber_process') and self._bundled_transcriber_process:
             self._bundled_transcriber_process.terminate()
             try:
                 self._bundled_transcriber_process.wait(timeout=5.0)
@@ -1136,5 +1138,5 @@ class WakeWord:
     def __del__(self):
         """Clean up resources."""
         self.stop()
-        if self._session:
+        if hasattr(self, '_session') and self._session:
             self._session.close()
