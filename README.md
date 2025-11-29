@@ -113,7 +113,12 @@ WakeWord(
     callback: Optional[Callable[[str], None]] = None,
     device: Optional[int] = None,
     similarity_threshold: float = 75.0,
-    stt_backend: Optional[str] = None
+    stt_backend: Optional[str] = None,
+    buffer_seconds: int = 10,
+    verbose: bool = False,
+    session_headers: Optional[Dict[str, str]] = None,
+    retry_count: int = 3,
+    retry_backoff: float = 0.5
 )
 ```
 
@@ -134,6 +139,11 @@ WakeWord(
 | `speech_duration_min` | float or None | | None | Min speech duration (auto-calculated from reference audio) |
 | `speech_duration_max` | float or None | | None | Max speech duration (auto-calculated from reference audio) |
 | `post_speech_silence` | float or None | | None | Min silence after speech (auto-calculated from reference audio) |
+| `buffer_seconds` | int | | 10 | Audio buffer size in seconds. Larger = more memory, longer phrases |
+| `verbose` | bool | | False | Enable verbose logging via Python logging module |
+| `session_headers` | dict | | None | HTTP headers for transcription API requests (e.g., for auth) |
+| `retry_count` | int | | 3 | Number of retries for transient network failures |
+| `retry_backoff` | float | | 0.5 | Initial backoff delay (seconds) for retries (exponential) |
 
 #### Methods
 
@@ -176,6 +186,40 @@ Check if the detector is currently listening.
 ```python
 if detector.is_listening():
     print("Actively listening...")
+```
+
+##### `check_transcriber_health() -> dict`
+
+Check the health status of the transcription service.
+
+- **Returns**: `dict` - Health status with keys:
+  - `healthy`: bool - True if service is reachable
+  - `url`: str - The transcriber URL being checked
+  - `latency_ms`: float - Response time in milliseconds (if healthy)
+  - `error`: str - Error message (if unhealthy)
+
+```python
+health = detector.check_transcriber_health()
+if health["healthy"]:
+    print(f"Service OK, latency: {health['latency_ms']:.1f}ms")
+else:
+    print(f"Service unhealthy: {health['error']}")
+```
+
+##### `configure_session(headers: dict = None, auth: tuple = None) -> None`
+
+Configure the HTTP session for transcription API requests.
+
+- **Args**:
+  - `headers`: Dictionary of HTTP headers (e.g., `{"Authorization": "Bearer token"}`)
+  - `auth`: Tuple of (username, password) for HTTP Basic authentication
+
+```python
+# Add API key for cloud Whisper service
+detector.configure_session(headers={"X-API-Key": "your-api-key"})
+
+# Or use Bearer token authentication
+detector.configure_session(headers={"Authorization": "Bearer your-token"})
 ```
 
 ## Advanced Configuration
