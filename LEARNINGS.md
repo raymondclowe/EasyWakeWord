@@ -105,14 +105,43 @@
 2. Add performance benchmarks [not implemented]
 3. Add multi-platform CI (Windows, Linux, macOS) [not implemented]
 4. Add stress tests (continuous operation, memory leaks) [not implemented]
-5. **Add simulated audio tests** [implemented - 18 tests now pass in CI]
+5. **Add simulated audio tests** [implemented - 31 tests now pass in CI]
+6. **Add cross-platform test compatibility** [implemented - tests work with/without PortAudio]
 
 ## CI Environment Notes
 
-- **PortAudio not available** - tests requiring real audio hardware will fail
+- **PortAudio not available** - tests requiring real audio hardware will be skipped (not fail)
 - **No audio input devices** - AudioDeviceManager returns None/warnings
 - **librosa deprecation warnings** - audioread fallback used, will be removed in v1.0
 - Tests using `object.__new__(WakeWord)` to bypass audio init work reliably
+- **Mock sounddevice** - `tests/test_helpers.py` provides mock sounddevice module for CI
+
+## Cross-Platform Testing (2024-11-29)
+
+### Test Architecture
+- `tests/conftest.py` - Pytest configuration with environment detection
+- `tests/test_helpers.py` - Safe imports with mock sounddevice fallback
+- `tests/test_cross_platform.py` - Platform-specific tests
+
+### Key Features
+- Tests **automatically skip** when PortAudio unavailable (instead of failing)
+- Mock sounddevice module allows importing WakeWord classes without audio hardware
+- Custom pytest markers: `@pytest.mark.requires_portaudio`, `@pytest.mark.requires_audio_device`
+- Fixtures for environment detection: `portaudio_available`, `in_ci_environment`, `is_windows`, etc.
+
+### Running Tests
+```bash
+# Full test suite (with PortAudio)
+pytest tests/ -v  # 31 passed
+
+# Without PortAudio (simulated CI)
+pytest tests/ -v  # 30 passed, 1 skipped
+```
+
+### Creating New Tests
+- Import from `tests.test_helpers` instead of `easywakeword.wakeword`
+- Use `create_minimal_wakeword_instance()` to avoid audio initialization
+- Mark hardware-dependent tests with `@pytest.mark.requires_portaudio`
 
 ## Development Workflow
 
