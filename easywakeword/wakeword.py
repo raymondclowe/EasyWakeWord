@@ -38,6 +38,14 @@ DEFAULT_BUFFER_SECONDS = 10
 DEFAULT_RETRY_COUNT = 3
 DEFAULT_RETRY_BACKOFF = 0.5  # Initial retry delay in seconds
 
+# Default fixed silence durations (in seconds)
+# These are fixed values that work well for typical wake words
+# Users can override these if needed
+DEFAULT_PRE_SPEECH_SILENCE = 0.8
+DEFAULT_SPEECH_DURATION_MIN = 0.3
+DEFAULT_SPEECH_DURATION_MAX = 2.0
+DEFAULT_POST_SPEECH_SILENCE = 0.4
+
 
 class AudioDeviceManager:
     """Manages audio device selection with intelligent defaults and name-based matching."""
@@ -568,40 +576,56 @@ class WakeWord:
     """
     Wake word detector for speech recognition.
 
-    Listens for a specific wake word using MFCC-based audio matching
-    and optional Whisper-based transcription confirmation.
+    Listens for a specific wake word using a unified three-level detection approach:
+    1. Silence and speech timing - Validates audio segment boundaries
+    2. MFCC cosine similarity - Fast acoustic matching against reference WAV
+    3. Whisper transcription - Final confirmation with word count validation
 
-    Supports multiple STT backends:
-    - "bundled": Auto-downloads and runs mini_transcriber locally
-    - URL string: Uses an external Whisper API at the specified URL
-    - None: Relies only on MFCC matching without transcription confirmation
+    Whisper transcription is always used for reliable detection (bundled by default).
+    
+    Recommended usage: Use a 2-word phrase (e.g., "ok computer") but record only the
+    main/major word (e.g., "computer") for the reference WAV. This provides better
+    practical results even though it's suboptimal for MFCC similarity checking.
+
+    STT Backends:
+    - "bundled" (default): Auto-downloads and runs mini_transcriber locally
+    - "external": Uses an external Whisper API at the specified URL
 
     Example:
+        >>> # Two-word phrase with main word reference (recommended)
         >>> detector = WakeWord(
-        ...     textword="hey assistant",
-        ...     wavword="hey_assistant.wav",
-        ...     numberofwords=2,
-        ...     verbose=True
+        ...     textword="ok computer",
+        ...     wavword="computer.wav",  # Only the main word
+        ...     numberofwords=2
         ... )
         >>> detector.waitforit()  # Blocking detection
-        'hey assistant'
+        'ok computer'
+
+        >>> # Multi-word detection with external Whisper
+        >>> detector = WakeWord(
+        ...     textword="hey assistant",
+        ...     wavword="assistant.wav",  # Only the main word
+        ...     numberofwords=2,
+        ...     stt_backend="external",
+        ...     external_whisper_url="http://localhost:8085"
+        ... )
     """
 
     def __init__(
         self,
         textword: str,
         wavword: str,
-        numberofwords: int,
+        numberofwords: int = 2,
         timeout: int = 30,
         external_whisper_url: Optional[str] = None,
         callback: Optional[Callable[[str], None]] = None,
         device: Optional[Union[int, str]] = None,
         similarity_threshold: float = 75.0,
-        stt_backend: Optional[str] = None,
-        pre_speech_silence: Optional[float] = None,
-        speech_duration_min: Optional[float] = None,
-        speech_duration_max: Optional[float] = None,
-        post_speech_silence: Optional[float] = None,
+        stt_backend: str = "bundled",
+        pre_speech_silence: float = DEFAULT_PRE_SPEECH_SILENCE,
+        speech_duration_min: float = DEFAULT_SPEECH_DURATION_MIN,
+        speech_duration_max: float = DEFAULT_SPEECH_DURATION_MAX,
+        post_speech_silence: float = DEFAULT_POST_SPEECH_SILENCE,
         buffer_seconds: int = DEFAULT_BUFFER_SECONDS,
         verbose: bool = False,
         session_headers: Optional[Dict[str, str]] = None,
@@ -611,13 +635,28 @@ class WakeWord:
         """
         Initialize the wake word detector.
 
+        The detector uses three-level checking for reliable detection:
+        1. Silence and speech timing - Validates audio segment boundaries
+        2. MFCC cosine similarity - Fast acoustic matching against reference
+        3. Whisper transcription - Final confirmation with word count validation
+
+        By default, the bundled Whisper backend is used for transcription.
+        
+        Recommended: Use a 2-word phrase (e.g., "ok computer") but record only the
+        main word (e.g., "computer") for the reference WAV. This works better in 
+        practice even though it's suboptimal for MFCC similarity checking.
+
         Args:
-            textword: The text phrase to detect (e.g., "ok google")
-            wavword: Path to reference WAV file for MFCC matching
-            numberofwords: Number of words in the wake phrase
+            textword: The text phrase to detect (e.g., "ok computer")
+            wavword: Path to reference WAV file for MFCC matching. Should contain
+                     only the main/major word of the phrase (e.g., "computer.wav"
+                     for "ok computer"). This provides better practical results.
+            numberofwords: Number of words expected in the wake phrase (default: 2).
+                           Used to filter/validate Whisper transcription output.
             timeout: Timeout in seconds (default: 30)
             external_whisper_url: URL of external Whisper API for transcription
-                                  (e.g., "http://localhost:8085" for mini_transcriber)
+                                  (e.g., "http://localhost:8085" for mini_transcriber).
+                                  Only used if stt_backend is not "bundled".
             callback: Callback function for async detection. Called with detected text.
             device: Audio input device specification:
                     - None: Auto-select best available device
@@ -626,17 +665,17 @@ class WakeWord:
                            magic words: "best", "first", "default"
             similarity_threshold: MFCC similarity threshold (0-100, default: 75).
                                   Higher values reduce false positives but may miss detections.
-            stt_backend: STT backend to use:
-                         - "bundled": Auto-download and run mini_transcriber locally
-                         - None: Use external_whisper_url if provided, otherwise MFCC only
+            stt_backend: STT backend to use (default: "bundled"):
+                         - "bundled": Auto-download and run mini_transcriber locally (recommended)
+                         - "external": Use external_whisper_url for transcription
             pre_speech_silence: Minimum silence duration before speech starts (seconds).
-                                If None, auto-calculated from reference audio or heuristics.
-            speech_duration_min: Minimum speech duration (seconds).
-                                 If None, auto-calculated from reference audio or heuristics.
-            speech_duration_max: Maximum speech duration (seconds).
-                                 If None, auto-calculated from reference audio or heuristics.
+                                Default: 0.8s. Override for custom tuning.
+            speech_duration_min: Minimum speech duration in seconds (default: 0.3s).
+                                 Override for custom tuning.
+            speech_duration_max: Maximum speech duration in seconds (default: 2.0s).
+                                 Override for custom tuning.
             post_speech_silence: Minimum silence duration after speech ends (seconds).
-                                 If None, auto-calculated from reference audio or heuristics.
+                                 Default: 0.4s. Override for custom tuning.
             buffer_seconds: Audio buffer size in seconds (default: 10). Larger buffers use
                             more memory but allow detection of longer wake phrases.
             verbose: Enable verbose logging output (default: False). When True, logs detailed
@@ -652,13 +691,25 @@ class WakeWord:
             ValueError: If numberofwords is less than 1, buffer_seconds is not positive,
                         or retry parameters are invalid.
         """
-        # Validate new parameters
+        # Validate parameters
+        if numberofwords < 1:
+            raise ValueError("numberofwords must be at least 1")
         if buffer_seconds <= 0:
             raise ValueError("buffer_seconds must be positive")
         if retry_count < 0:
             raise ValueError("retry_count must be non-negative")
         if retry_backoff < 0:
             raise ValueError("retry_backoff must be non-negative")
+        if pre_speech_silence <= 0:
+            raise ValueError("pre_speech_silence must be positive")
+        if speech_duration_min <= 0:
+            raise ValueError("speech_duration_min must be positive")
+        if speech_duration_max <= 0:
+            raise ValueError("speech_duration_max must be positive")
+        if speech_duration_min > speech_duration_max:
+            raise ValueError("speech_duration_min must be <= speech_duration_max")
+        if post_speech_silence <= 0:
+            raise ValueError("post_speech_silence must be positive")
 
         self.textword = textword.lower().strip()
         self.wavword = wavword
@@ -674,12 +725,12 @@ class WakeWord:
         self.retry_count = retry_count
         self.retry_backoff = retry_backoff
 
-        # Calculate speech detection thresholds
+        # Use the provided fixed silence durations directly
+        # (auto-calculation methods are kept for backwards compatibility but not called)
         self.pre_speech_silence = pre_speech_silence
         self.speech_duration_min = speech_duration_min
         self.speech_duration_max = speech_duration_max
         self.post_speech_silence = post_speech_silence
-        self._calculate_detection_thresholds()
 
         self._sound_buffer: Optional[SoundBuffer] = None
         self._matcher: Optional[WordMatcher] = None
@@ -797,6 +848,9 @@ class WakeWord:
         """
         Calculate speech detection thresholds based on reference audio or heuristics.
 
+        Note: This method is kept for backwards compatibility but is not called
+        automatically during initialization. Fixed defaults are now used instead.
+
         Sets self.pre_speech_silence, self.speech_duration_min, self.speech_duration_max,
         and self.post_speech_silence if they are None.
         """
@@ -820,6 +874,9 @@ class WakeWord:
     def _analyze_reference_audio_duration(self) -> Optional[float]:
         """
         Analyze the reference audio file to determine its actual speech duration.
+
+        Note: This method is kept for backwards compatibility. It can be used
+        to analyze reference audio if needed for custom threshold tuning.
 
         Returns:
             Duration of speech in the reference audio (seconds), or None if analysis fails
@@ -864,6 +921,9 @@ class WakeWord:
         """
         Set detection thresholds based on analyzed reference audio duration.
 
+        Note: This method is kept for backwards compatibility. Fixed defaults
+        are now used in the constructor instead.
+
         Args:
             audio_duration: Duration of speech in reference audio (seconds)
         """
@@ -885,6 +945,9 @@ class WakeWord:
     def _set_thresholds_from_text_heuristics(self) -> None:
         """
         Set detection thresholds based on text analysis heuristics.
+
+        Note: This method is kept for backwards compatibility. Fixed defaults
+        are now used in the constructor instead.
         """
         # Estimate syllables (rough approximation)
         text = self.textword.lower()
@@ -944,16 +1007,22 @@ class WakeWord:
         return max(1, total_syllables)
 
     def _setup_stt_backend(self) -> None:
-        """Set up the STT backend based on configuration."""
+        """Set up the STT backend based on configuration.
+        
+        Whisper transcription is always used for reliable detection.
+        The bundled backend is the default and recommended option.
+        """
         if self.stt_backend == "bundled":
             # Will set up bundled mini_transcriber on first use
             self._transcriber_url = f"http://localhost:{DEFAULT_MINI_TRANSCRIBER_PORT}"
-        elif self.external_whisper_url:
+        elif self.stt_backend == "external" and self.external_whisper_url:
             # Use provided external URL
             self._transcriber_url = self.external_whisper_url
         else:
-            # No transcription service, rely on MFCC matching only
-            self._transcriber_url = None
+            # Default to bundled for reliability
+            self.stt_backend = "bundled"
+            self._transcriber_url = f"http://localhost:{DEFAULT_MINI_TRANSCRIBER_PORT}"
+            self._log("No valid STT backend specified, defaulting to bundled", logging.INFO)
 
     def _ensure_bundled_transcriber(self) -> bool:
         """
@@ -1136,6 +1205,11 @@ class WakeWord:
         """
         Internal method to detect a single word occurrence.
 
+        Uses three-level checking for reliable detection:
+        1. Silence and speech timing - Validates audio segment boundaries
+        2. MFCC cosine similarity - Fast acoustic matching against reference
+        3. Whisper transcription - Final confirmation with word count validation
+
         Returns:
             Detected text or None if not detected
         """
@@ -1191,7 +1265,7 @@ class WakeWord:
                 if is_currently_silent:
                     trailing_silence_duration = current_time - sound_end_time
                     if trailing_silence_duration >= self.post_speech_silence:
-                        # Extract the word
+                        # Level 1: Silence/speech timing passed - extract audio
                         padding = 0.05
                         extract_start = sound_start_time - current_time - padding
                         extract_end = sound_end_time - current_time + padding
@@ -1207,29 +1281,44 @@ class WakeWord:
                         # Skip if audio is too long
                         audio_duration = len(word_audio) / SoundBuffer.FREQUENCY
                         if audio_duration > 3.0:
+                            self._log("Audio segment too long, skipping")
                             state = "waiting"
                             continue
 
-                        # Check MFCC similarity
+                        # Level 2: MFCC cosine similarity check
                         matches, similarity = self._matcher.matches(
                             word_audio, threshold=self.similarity_threshold
                         )
+                        self._log(f"MFCC similarity: {similarity:.1f}%")
 
                         if matches:
-                            # Try transcription if available
-                            if self._transcriber_url:
-                                transcription = self._transcribe_audio(word_audio)
-                                if transcription:
-                                    transcription_clean = transcription.strip().lower().rstrip(".,!?;:")
-                                    target_words = self.textword.split()
-                                    transcription_words = transcription_clean.split()
+                            # Level 3: Whisper transcription confirmation (required)
+                            transcription = self._transcribe_audio(word_audio)
+                            if transcription:
+                                transcription_clean = transcription.strip().lower().rstrip(".,!?;:")
+                                target_words = self.textword.split()
+                                transcription_words = transcription_clean.split()
 
-                                    # Check if all target words appear in transcription
-                                    if all(word in transcription_words for word in target_words):
-                                        return transcription
+                                # Validate word count matches expectation
+                                if len(transcription_words) != self.numberofwords:
+                                    self._log(
+                                        f"Word count mismatch: expected {self.numberofwords}, "
+                                        f"got {len(transcription_words)} ('{transcription_clean}')"
+                                    )
+                                    state = "waiting"
+                                    continue
+
+                                # Check if all target words appear in transcription
+                                if all(word in transcription_words for word in target_words):
+                                    self._log(f"Wake word detected: '{transcription}'")
+                                    return transcription
+                                else:
+                                    self._log(
+                                        f"Target words not found in transcription: "
+                                        f"'{transcription_clean}' vs '{self.textword}'"
+                                    )
                             else:
-                                # No transcription service, rely on MFCC match
-                                return self.textword
+                                self._log("Transcription failed, cannot confirm detection")
 
                         state = "waiting"
                 else:
