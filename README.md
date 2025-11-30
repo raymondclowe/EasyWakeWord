@@ -108,8 +108,8 @@ WakeWord(
     similarity_threshold: float = 75.0,
     stt_backend: str = "bundled",
     pre_speech_silence: float = 0.8,
-    speech_duration_min: float = 0.3,
-    speech_duration_max: float = 2.0,
+    speech_duration_min: Optional[float] = None,  # Auto-calculated from WAV
+    speech_duration_max: Optional[float] = None,  # Auto-calculated as 2x min
     post_speech_silence: float = 0.4,
     buffer_seconds: int = 10,
     verbose: bool = False,
@@ -133,8 +133,8 @@ WakeWord(
 | `device` | int, str, or None | None | Audio device: index, name pattern, or magic word ("best", "first", "default") |
 | `similarity_threshold` | float | 75.0 | MFCC similarity threshold (0-100). Higher = fewer false positives |
 | `pre_speech_silence` | float | 0.8 | Min silence before speech (seconds). Override for custom tuning. |
-| `speech_duration_min` | float | 0.3 | Min speech duration (seconds). Override for custom tuning. |
-| `speech_duration_max` | float | 2.0 | Max speech duration (seconds). Override for custom tuning. |
+| `speech_duration_min` | float | None | Min speech duration (seconds). Auto-calculated from WAV file speech duration. Override for custom tuning. |
+| `speech_duration_max` | float | None | Max speech duration (seconds). Auto-calculated as 2x min. Override for custom tuning. |
 | `post_speech_silence` | float | 0.4 | Min silence after speech (seconds). Override for custom tuning. |
 | `buffer_seconds` | int | 10 | Audio buffer size in seconds |
 | `verbose` | bool | False | Enable verbose logging |
@@ -251,30 +251,42 @@ detector = WakeWord(
 
 ### Tuning Speech Detection Parameters
 
-EasyWakeWord uses fixed silence durations by default that work well for typical wake words. You can override them for custom tuning:
+EasyWakeWord automatically calculates optimal speech duration thresholds from your reference WAV file:
+
+- **`speech_duration_min`**: Auto-calculated from the actual speech duration in your reference WAV
+- **`speech_duration_max`**: Auto-calculated as 2x the min value
+
+This means the detector adapts to your specific wake word length automatically. You can override these values for custom tuning:
 
 ```python
-# Default values (work well for most cases)
+# Auto-calculated values (recommended - adapts to your WAV file)
 detector = WakeWord(
     textword="hello",
-    wavword="hello.wav"
+    wavword="hello.wav"  # If WAV contains 0.5s of speech: min=0.5s, max=1.0s
 )
-# pre_speech_silence=0.8, speech_duration_min=0.3, speech_duration_max=2.0, post_speech_silence=0.4
 
 # Custom values for specific needs
 detector = WakeWord(
     textword="hello",
     wavword="hello.wav",
     pre_speech_silence=1.0,    # Longer silence requirement before speech
-    speech_duration_min=0.5,   # Minimum speech duration
-    speech_duration_max=1.5,   # Maximum speech duration
+    speech_duration_min=0.5,   # Override minimum speech duration
+    speech_duration_max=1.5,   # Override maximum speech duration
     post_speech_silence=0.6    # Longer trailing silence
+)
+
+# Override only min (max will be 2x min)
+detector = WakeWord(
+    textword="hello",
+    wavword="hello.wav",
+    speech_duration_min=0.4    # min=0.4s, max=0.8s (auto-calculated)
 )
 ```
 
 **Parameter Guide**:
 - **`pre_speech_silence`**: Silence required before speech starts (default: 0.8s)
-- **`speech_duration_min/max`**: Expected speech duration range (default: 0.3s-2.0s)
+- **`speech_duration_min`**: Minimum speech duration (auto-calculated from WAV, fallback: 0.3s)
+- **`speech_duration_max`**: Maximum speech duration (auto-calculated as 2x min, fallback: 2.0s)
 - **`post_speech_silence`**: Silence required after speech ends (default: 0.4s)
 
 ### Using External Whisper Server
@@ -401,7 +413,7 @@ EasyWakeWord uses a unified three-level detection approach for reliability:
 
 1. **Silence/Speech Timing**: Monitors audio for valid speech patterns
    - Requires minimum silence before speech starts (default: 0.8s)
-   - Speech duration must be within expected range (default: 0.3-2.0s)
+   - Speech duration must be within expected range (auto-calculated from WAV file)
    - Requires silence after speech ends (default: 0.4s)
 
 2. **MFCC Cosine Similarity**: Fast acoustic matching
