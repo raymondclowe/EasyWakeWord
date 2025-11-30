@@ -1,0 +1,10 @@
+dist/
+*.egg-info/
+__pycache__/
+.venv/
+*.pyc.vscode/launch.json
+.vscode/settings.json
+.private/
+__pycache__/
+*.pyc
+*.pyo
