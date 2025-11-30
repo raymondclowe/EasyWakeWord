@@ -5,16 +5,12 @@ This module provides wake word detection using MFCC-based audio matching
 and optional Whisper-based transcription confirmation.
 
 Supports multiple STT backends:
-- Local mini_transcriber (bundled, auto-downloads on first run)
-- External Whisper API (user-provided URL)
-- Commercial APIs (e.g., replicate.com)
+- Local Whisper (bundled via openai-whisper)
 """
 
 import io
 import logging
 import os
-import subprocess
-import sys
 import threading
 import time
 import re
@@ -22,18 +18,16 @@ from typing import Callable, Dict, Optional, Union
 
 import librosa
 import numpy as np
-import requests
 import sounddevice as sd
 import soundfile as sf
 from scipy.spatial.distance import cosine
 
+from .transcriber import WhisperTranscriber
 
 # Configure module logger
 logger = logging.getLogger(__name__)
 
 # Constants for STT backend configuration
-DEFAULT_MINI_TRANSCRIBER_PORT = 8085
-MINI_TRANSCRIBER_REPO = "https://github.com/raymondclowe/mini_transcriber.git"
 DEFAULT_BUFFER_SECONDS = 10
 DEFAULT_RETRY_COUNT = 3
 DEFAULT_RETRY_BACKOFF = 0.5  # Initial retry delay in seconds
@@ -653,10 +647,6 @@ class WakeWord:
     main/major word (e.g., "computer") for the reference WAV. This provides better
     practical results even though it's suboptimal for MFCC similarity checking.
 
-    STT Backends:
-    - "bundled" (default): Auto-downloads and runs mini_transcriber locally
-    - "external": Uses an external Whisper API at the specified URL
-
     Example:
         >>> # Two-word phrase with main word reference (recommended)
         >>> detector = WakeWord(
@@ -666,116 +656,7 @@ class WakeWord:
         ... )
         >>> detector.waitforit()  # Blocking detection
         'ok computer'
-
-        >>> # Multi-word detection with external Whisper
-        >>> detector = WakeWord(
-        ...     textword="hey assistant",
-        ...     wavword="assistant.wav",  # Only the main word
-        ...     numberofwords=2,
-        ...     stt_backend="external",
-        ...     external_whisper_url="http://localhost:8085"
-        ... )
     """
-
-    @classmethod
-    def ensure_bundled_transcriber(cls) -> bool:
-        """
-        Ensure the bundled mini_transcriber is running.
-
-        This is a class method that can be called before creating WakeWord instances
-        to pre-start the bundled transcriber for faster initialization.
-
-        Downloads and starts mini_transcriber if not already running.
-        Returns True if transcriber is available, False otherwise.
-
-        Example:
-            >>> WakeWord.ensure_bundled_transcriber()  # Pre-start transcriber
-            >>> detector = WakeWord("ok computer", "computer.wav", 2)
-        """
-        transcriber_url = f"http://localhost:{DEFAULT_MINI_TRANSCRIBER_PORT}"
-
-        # Check if transcriber is already running
-        try:
-            response = requests.get(f"{transcriber_url}/health", timeout=2)
-            if response.status_code == 200:
-                logger.info("Bundled transcriber already running")
-                return True
-        except Exception:
-            pass
-
-        # Try to download and start mini_transcriber
-        transcriber_dir = os.path.join(
-            os.path.expanduser("~"), ".easywakeword", "mini_transcriber"
-        )
-
-        if not os.path.exists(transcriber_dir):
-            logger.info("Downloading mini_transcriber for first-time setup...")
-            os.makedirs(os.path.dirname(transcriber_dir), exist_ok=True)
-            try:
-                subprocess.run(
-                    ["git", "clone", MINI_TRANSCRIBER_REPO, transcriber_dir],
-                    check=True,
-                    capture_output=True,
-                )
-                logger.info("mini_transcriber downloaded successfully")
-            except subprocess.CalledProcessError as e:
-                stderr_msg = e.stderr.decode() if e.stderr else "No error details"
-                logger.error(f"Failed to download mini_transcriber: git clone failed")
-                logger.error(f"  Command: git clone {MINI_TRANSCRIBER_REPO} {transcriber_dir}")
-                logger.error(f"  Error: {stderr_msg}")
-                return False
-
-        # Install dependencies if requirements.txt exists
-        req_file = os.path.join(transcriber_dir, "requirements.txt")
-        if os.path.exists(req_file):
-            logger.info("Installing dependencies...")
-            try:
-                subprocess.run(
-                    [sys.executable, "-m", "pip", "install", "-r", req_file],
-                    cwd=transcriber_dir,
-                    check=True,
-                )
-            except subprocess.CalledProcessError as e:
-                logger.error("Failed to install dependencies")
-                return False
-
-        # Start mini_transcriber
-        try:
-            app_path = os.path.join(transcriber_dir, "app.py")
-            if not os.path.exists(app_path):
-                logger.error(f"mini_transcriber app.py not found at {app_path}")
-                return False
-
-            env = os.environ.copy()
-            env["PORT"] = str(DEFAULT_MINI_TRANSCRIBER_PORT)
-            process = subprocess.Popen(
-                [sys.executable, app_path],
-                cwd=transcriber_dir,
-                env=env,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-
-            # Wait for transcriber to start
-            logger.info("Waiting for mini_transcriber to start...")
-            for i in range(60):  # Wait up to 60 seconds
-                time.sleep(1)
-                try:
-                    response = requests.get(f"{transcriber_url}/health", timeout=2)
-                    if response.status_code == 200:
-                        logger.info("mini_transcriber started successfully")
-                        return True
-                except Exception:
-                    pass
-                if (i + 1) % 10 == 0:
-                    logger.info(f"Still waiting for mini_transcriber... ({i+1}/60)")
-
-            logger.error("Timed out waiting for mini_transcriber to start")
-            return False
-
-        except Exception as e:
-            logger.error(f"Failed to start mini_transcriber: {e}")
-            return False
 
     def __init__(
         self,
@@ -783,20 +664,21 @@ class WakeWord:
         wavword: str,
         numberofwords: int = 2,
         timeout: int = 30,
-        external_whisper_url: Optional[str] = None,
         callback: Optional[Callable[[str], None]] = None,
         device: Optional[Union[int, str]] = None,
         similarity_threshold: float = 75.0,
-        stt_backend: str = "bundled",
         pre_speech_silence: float = DEFAULT_PRE_SPEECH_SILENCE,
         speech_duration_min: float = DEFAULT_SPEECH_DURATION_MIN,
         speech_duration_max: float = DEFAULT_SPEECH_DURATION_MAX,
         post_speech_silence: float = DEFAULT_POST_SPEECH_SILENCE,
         buffer_seconds: int = DEFAULT_BUFFER_SECONDS,
         verbose: bool = False,
-        session_headers: Optional[Dict[str, str]] = None,
         retry_count: int = DEFAULT_RETRY_COUNT,
         retry_backoff: float = DEFAULT_RETRY_BACKOFF,
+        # Deprecated/Ignored parameters kept for compatibility
+        external_whisper_url: Optional[str] = None,
+        stt_backend: str = "bundled",
+        session_headers: Optional[Dict[str, str]] = None,
     ):
         """
         Initialize the wake word detector.
@@ -820,9 +702,6 @@ class WakeWord:
             numberofwords: Number of words expected in the wake phrase (default: 2).
                            Used to filter/validate Whisper transcription output.
             timeout: Timeout in seconds (default: 30)
-            external_whisper_url: URL of external Whisper API for transcription
-                                  (e.g., "http://localhost:8085" for mini_transcriber).
-                                  Only used if stt_backend is not "bundled".
             callback: Callback function for async detection. Called with detected text.
             device: Audio input device specification:
                     - None: Auto-select best available device
@@ -831,9 +710,6 @@ class WakeWord:
                            magic words: "best", "first", "default"
             similarity_threshold: MFCC similarity threshold (0-100, default: 75).
                                   Higher values reduce false positives but may miss detections.
-            stt_backend: STT backend to use (default: "bundled"):
-                         - "bundled": Auto-download and run mini_transcriber locally (recommended)
-                         - "external": Use external_whisper_url for transcription
             pre_speech_silence: Minimum silence duration before speech starts (seconds).
                                 Default: 0.8s. Override for custom tuning.
             speech_duration_min: Minimum speech duration in seconds (default: 0.3s).
@@ -846,8 +722,6 @@ class WakeWord:
                             more memory but allow detection of longer wake phrases.
             verbose: Enable verbose logging output (default: False). When True, logs detailed
                      information about detection process to the module logger.
-            session_headers: Optional dictionary of HTTP headers to include in all requests
-                             to the transcription API. Useful for authentication tokens.
             retry_count: Number of retries for transient network failures (default: 3).
             retry_backoff: Initial backoff delay in seconds for retries (default: 0.5).
                            Uses exponential backoff: retry_backoff * 2^attempt.
@@ -881,11 +755,9 @@ class WakeWord:
         self.wavword = wavword
         self.numberofwords = numberofwords
         self.timeout = timeout
-        self.external_whisper_url = external_whisper_url
         self.callback = callback
         self.device = AudioDeviceManager.select_device(device)  # Resolve device specification
         self.similarity_threshold = similarity_threshold
-        self.stt_backend = stt_backend
         self.buffer_seconds = buffer_seconds
         self.verbose = verbose
         self.retry_count = retry_count
@@ -903,16 +775,9 @@ class WakeWord:
         self._listening = False
         self._listen_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
-        self._session = requests.Session()
-        self._bundled_transcriber_process: Optional[subprocess.Popen] = None
-        self._transcriber_url: Optional[str] = None
-
-        # Configure session headers for API authentication
-        if session_headers:
-            self._session.headers.update(session_headers)
-
-        # Set up transcriber URL based on backend configuration
-        self._setup_stt_backend()
+        
+        # Initialize internal Whisper transcriber
+        self._transcriber = WhisperTranscriber(verbose=verbose)
 
         self._log(f"Initialized WakeWord detector for '{self.textword}'")
 
@@ -927,31 +792,6 @@ class WakeWord:
         if self.verbose:
             logger.log(level, message)
 
-    def configure_session(self, headers: Optional[Dict[str, str]] = None,
-                          auth: Optional[tuple] = None) -> None:
-        """
-        Configure the HTTP session used for transcription API requests.
-
-        This method allows setting authentication headers or credentials for
-        cloud Whisper APIs that require authentication.
-
-        Args:
-            headers: Dictionary of HTTP headers to add to the session.
-                     Common headers include "Authorization", "X-API-Key", etc.
-            auth: Tuple of (username, password) for HTTP Basic authentication.
-
-        Example:
-            >>> detector.configure_session(
-            ...     headers={"Authorization": "Bearer YOUR_API_KEY"}
-            ... )
-        """
-        if headers:
-            self._session.headers.update(headers)
-            self._log(f"Updated session headers: {list(headers.keys())}")
-        if auth:
-            self._session.auth = auth
-            self._log("Configured session authentication")
-
     def check_transcriber_health(self) -> Dict[str, Union[bool, str, float]]:
         """
         Check the health status of the transcription service.
@@ -959,56 +799,15 @@ class WakeWord:
         Returns:
             Dictionary with health status information:
             - "healthy": bool indicating if service is reachable and responding
-            - "url": str of the transcriber URL being checked
-            - "latency_ms": float response time in milliseconds (if healthy)
-            - "error": str error message (if unhealthy)
-            - "status": str status message (if healthy but no transcriber configured)
-
-        Example:
-            >>> health = detector.check_transcriber_health()
-            >>> if health["healthy"]:
-            ...     print(f"Service OK, latency: {health['latency_ms']:.1f}ms")
-            ... else:
-            ...     print(f"Service unhealthy: {health['error']}")
+            - "model_loaded": bool indicating if the model is loaded
         """
-        result: Dict[str, Union[bool, str, float]] = {
-            "healthy": False,
-            "url": self._transcriber_url or "None (MFCC-only mode)",
+        # Since we are using internal transcriber, it is always "healthy" if initialized
+        # We can check if the model is loaded
+        return {
+            "healthy": True,
+            "model_loaded": self._transcriber.model is not None,
+            "backend": "internal_whisper"
         }
-
-        if self._transcriber_url is None:
-            result["healthy"] = True
-            result["status"] = "No transcriber configured (MFCC-only mode)"
-            return result
-
-        try:
-            start_time = time.time()
-            response = self._session.get(
-                f"{self._transcriber_url}/health",
-                timeout=5
-            )
-            latency_ms = (time.time() - start_time) * 1000
-
-            if response.status_code == 200:
-                result["healthy"] = True
-                result["latency_ms"] = latency_ms
-                self._log(f"Transcriber health check OK: {latency_ms:.1f}ms")
-            else:
-                result["error"] = f"HTTP {response.status_code}"
-                self._log(f"Transcriber health check failed: HTTP {response.status_code}",
-                          logging.WARNING)
-
-        except requests.exceptions.Timeout:
-            result["error"] = "Connection timeout"
-            self._log("Transcriber health check failed: timeout", logging.WARNING)
-        except requests.exceptions.ConnectionError as e:
-            result["error"] = f"Connection error: {str(e)}"
-            self._log(f"Transcriber health check failed: {e}", logging.WARNING)
-        except Exception as e:
-            result["error"] = f"Unexpected error: {str(e)}"
-            self._log(f"Transcriber health check failed: {e}", logging.ERROR)
-
-        return result
 
     def _calculate_detection_thresholds(self) -> None:
         """
@@ -1172,108 +971,6 @@ class WakeWord:
 
         return max(1, total_syllables)
 
-    def _setup_stt_backend(self) -> None:
-        """Set up the STT backend based on configuration.
-        
-        Whisper transcription is always used for reliable detection.
-        The bundled backend is the default and recommended option.
-        """
-        if self.stt_backend == "bundled":
-            # Will set up bundled mini_transcriber on first use
-            self._transcriber_url = f"http://localhost:{DEFAULT_MINI_TRANSCRIBER_PORT}"
-        elif self.stt_backend == "external" and self.external_whisper_url:
-            # Use provided external URL
-            self._transcriber_url = self.external_whisper_url
-        else:
-            # Default to bundled for reliability
-            self.stt_backend = "bundled"
-            self._transcriber_url = f"http://localhost:{DEFAULT_MINI_TRANSCRIBER_PORT}"
-            self._log("No valid STT backend specified, defaulting to bundled", logging.INFO)
-
-    def _ensure_bundled_transcriber(self) -> bool:
-        """
-        Ensure the bundled mini_transcriber is running.
-
-        Downloads and starts mini_transcriber if not already running.
-
-        Returns:
-            True if transcriber is available, False otherwise.
-        """
-        if self.stt_backend != "bundled":
-            return self._transcriber_url is not None
-
-        # Check if transcriber is already running
-        try:
-            response = self._session.get(
-                f"{self._transcriber_url}/health", timeout=2
-            )
-            if response.status_code == 200:
-                self._log("Bundled transcriber already running")
-                return True
-        except Exception:
-            pass
-
-        # Try to download and start mini_transcriber
-        transcriber_dir = os.path.join(
-            os.path.expanduser("~"), ".easywakeword", "mini_transcriber"
-        )
-
-        if not os.path.exists(transcriber_dir):
-            self._log("Downloading mini_transcriber for first-time setup...", logging.INFO)
-            os.makedirs(os.path.dirname(transcriber_dir), exist_ok=True)
-            try:
-                subprocess.run(
-                    ["git", "clone", MINI_TRANSCRIBER_REPO, transcriber_dir],
-                    check=True,
-                    capture_output=True,
-                )
-                self._log("mini_transcriber downloaded successfully")
-            except subprocess.CalledProcessError as e:
-                stderr_msg = e.stderr.decode() if e.stderr else "No error details"
-                self._log(f"Failed to download mini_transcriber: git clone failed", logging.ERROR)
-                self._log(f"  Command: git clone {MINI_TRANSCRIBER_REPO} {transcriber_dir}", logging.ERROR)
-                self._log(f"  Error: {stderr_msg}", logging.ERROR)
-                return False
-
-        # Start mini_transcriber
-        try:
-            app_path = os.path.join(transcriber_dir, "app.py")
-            if not os.path.exists(app_path):
-                self._log(f"mini_transcriber app.py not found at {app_path}", logging.ERROR)
-                return False
-
-            env = os.environ.copy()
-            env["PORT"] = str(DEFAULT_MINI_TRANSCRIBER_PORT)
-            self._bundled_transcriber_process = subprocess.Popen(
-                [sys.executable, app_path],
-                cwd=transcriber_dir,
-                env=env,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-
-            # Wait for transcriber to start
-            self._log("Waiting for mini_transcriber to start...")
-            for i in range(30):  # Wait up to 30 seconds
-                time.sleep(1)
-                try:
-                    response = self._session.get(
-                        f"{self._transcriber_url}/health", timeout=2
-                    )
-                    if response.status_code == 200:
-                        self._log("mini_transcriber started successfully", logging.INFO)
-                        return True
-                except Exception:
-                    pass
-                self._log(f"Waiting for mini_transcriber... ({i+1}/30)")
-
-            self._log("Timed out waiting for mini_transcriber to start", logging.ERROR)
-            return False
-
-        except Exception as e:
-            self._log(f"Failed to start mini_transcriber: {e}", logging.ERROR)
-            return False
-
     def _initialize_audio(self) -> None:
         """Initialize audio buffer and word matcher."""
         if self._sound_buffer is None:
@@ -1283,6 +980,9 @@ class WakeWord:
             self._matcher = WordMatcher(sample_rate=SoundBuffer.FREQUENCY)
             self._matcher.load_reference_from_file(self.wavword, self.textword)
             self._log(f"Word matcher initialized with reference: {self.wavword}")
+        
+        # Ensure transcriber model is loaded
+        self._transcriber.load_model()
 
     def _wait_for_buffer(self) -> None:
         """Wait for the audio buffer to be filled."""
@@ -1301,14 +1001,6 @@ class WakeWord:
         Returns:
             Transcription text or None if failed after all retries.
         """
-        if self._transcriber_url is None:
-            return None
-
-        # Ensure bundled transcriber is running if needed
-        if self.stt_backend == "bundled":
-            if not self._ensure_bundled_transcriber():
-                return None
-
         # Normalize and boost audio
         audio_samples = audio_samples - np.mean(audio_samples)
         max_val = np.max(np.abs(audio_samples))
@@ -1317,55 +1009,14 @@ class WakeWord:
         audio_samples = audio_samples * 1.5
         audio_samples = np.clip(audio_samples, -1.0, 1.0)
 
-        # Retry loop with exponential backoff
-        last_error = None
-        for attempt in range(self.retry_count):
-            try:
-                # Convert audio to WAV format in memory
-                buffer = io.BytesIO()
-                sf.write(buffer, audio_samples, SoundBuffer.FREQUENCY, format="WAV")
-                buffer.seek(0)
-
-                files = {"file": ("audio.wav", buffer, "audio/wav")}
-                data = {"model": "tiny", "language": "en", "initial_prompt": f"Wake word: {self.textword}"}
-
-                self._log(f"Sending transcription request (attempt {attempt + 1}/{self.retry_count})")
-
-                response = self._session.post(
-                    f"{self._transcriber_url}/transcribe", files=files, data=data, timeout=10
-                )
-
-                if response.status_code == 200:
-                    result = response.json()
-                    text = result.get("text", "").strip()
-                    self._log(f"Transcription result: '{text}'")
-                    return text
-                else:
-                    self._log(f"Transcription request failed with HTTP {response.status_code}",
-                              logging.WARNING)
-                    last_error = f"HTTP {response.status_code}"
-
-            except requests.exceptions.Timeout as e:
-                self._log(f"Transcription request timed out (attempt {attempt + 1})", logging.WARNING)
-                last_error = "Timeout"
-            except requests.exceptions.ConnectionError as e:
-                self._log(f"Connection error during transcription (attempt {attempt + 1}): {e}",
-                          logging.WARNING)
-                last_error = f"Connection error: {e}"
-            except Exception as e:
-                self._log(f"Unexpected error during transcription (attempt {attempt + 1}): {e}",
-                          logging.WARNING)
-                last_error = f"Error: {e}"
-
-            # Exponential backoff before retry (capped at 30 seconds)
-            if attempt < self.retry_count - 1:
-                backoff_delay = min(self.retry_backoff * (2 ** attempt), 30.0)
-                self._log(f"Retrying in {backoff_delay:.1f}s...")
-                time.sleep(backoff_delay)
-
-        self._log(f"All {self.retry_count} transcription attempts failed. Last error: {last_error}",
-                  logging.ERROR)
-        return None
+        try:
+            self._log(f"Transcribing audio...")
+            text = self._transcriber.transcribe(audio_samples, initial_prompt=f"Wake word: {self.textword}")
+            self._log(f"Transcription result: '{text}'")
+            return text
+        except Exception as e:
+            self._log(f"Transcription failed: {e}", logging.ERROR)
+            return None
 
     def _detect_word(self) -> Optional[str]:
         """
@@ -1560,16 +1211,6 @@ class WakeWord:
         if hasattr(self, '_listening'):
             self._listening = False
 
-        # Stop bundled transcriber if we started it
-        if hasattr(self, '_bundled_transcriber_process') and self._bundled_transcriber_process:
-            self._bundled_transcriber_process.terminate()
-            try:
-                self._bundled_transcriber_process.wait(timeout=5.0)
-            except subprocess.TimeoutExpired:
-                self._bundled_transcriber_process.kill()
-                self._bundled_transcriber_process.wait()
-            self._bundled_transcriber_process = None
-
     def is_listening(self) -> bool:
         """
         Check if the detector is currently listening.
@@ -1582,5 +1223,3 @@ class WakeWord:
     def __del__(self):
         """Clean up resources."""
         self.stop()
-        if hasattr(self, '_session') and self._session:
-            self._session.close()

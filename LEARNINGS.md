@@ -143,6 +143,31 @@ pytest tests/ -v  # 30 passed, 1 skipped
 - Use `create_minimal_wakeword_instance()` to avoid audio initialization
 - Mark hardware-dependent tests with `@pytest.mark.requires_portaudio`
 
+## mini_transcriber Issues (2024-11-30)
+
+### Bundle Installation Problems Found
+1. **Model not preloading** - `app.before_serving()` and `app.before_first_request()` hooks don't work reliably
+2. **app.py has bugs** - Indentation issues, undefined variables (`b64`, `language`)
+3. **Health check misleading** - Returns 200 OK but `model_loaded: false` forever
+4. **No model load trigger** - Model only loads on first transcription request, but transcription fails due to bugs
+
+### Root Cause
+- mini_transcriber repo (https://github.com/raymondclowe/mini_transcriber) has unmerged fixes
+- Model preloading hooks not triggering
+- Transcription endpoint crashes before model loads: `UnboundLocalError: local variable 'b64' referenced before assignment`
+
+### Solution Options
+1. **Fix upstream** - Submit PR to mini_transcriber repo
+2. **Fork and fix** - Maintain fixed version in easywakeword
+3. **Lazy load workaround** - Trigger model load via successful initial transcription
+4. **Direct whisper integration** - Bundle whisper directly, skip mini_transcriber
+
+### Workaround Implemented
+- Added better logging to `ensure_bundled_transcriber()` with server.log file
+- Added progress output every 5-10 seconds during wait
+- Check if server process died during wait
+- But model still won't load due to app.py bugs
+
 ## Development Workflow
 
 - Always update LEARNINGS.md when solving new problems
