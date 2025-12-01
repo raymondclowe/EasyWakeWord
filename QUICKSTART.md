@@ -24,7 +24,10 @@ uv pip install -e ".[dev]"
 ## Run Demo
 
 ```bash
-# Run the demo (requires a Whisper STT server running)
+# First, ensure mini_transcriber is running
+# See: https://github.com/raymondclowe/mini_transcriber
+
+# Run the demo
 easywakeword-demo
 
 # Or run directly

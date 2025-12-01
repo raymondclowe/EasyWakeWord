@@ -114,21 +114,27 @@ Wait for and detect the wake word.
 
 ## Whisper STT Server
 
-This library requires a Whisper STT server. You can set it up using:
+This library requires a Whisper STT server. The recommended server is **mini_transcriber**:
 
 ```bash
-# Install faster-whisper-server
-pip install faster-whisper-server
+# Clone mini_transcriber
+git clone https://github.com/raymondclowe/mini_transcriber.git
+cd mini_transcriber
 
-# Run the server
-faster-whisper-server --model tiny
+# Follow setup instructions in that repo
+# The server should be accessible at mini_transcriber.local:8080
 ```
+
+The default configuration expects:
+- Hostname: `mini_transcriber.local`
+- Port: `8080`
+- Endpoint: POST with `audio` file field
 
 Or configure a custom server URL:
 
 ```python
 recognizer = easywakeword.Recogniser(
-    whisperurl="http://your-server:8000",
+    whisperurl="http://your-server:8080",
     ...
 )
 ```
@@ -154,7 +160,7 @@ MIT License - see LICENSE file for details
 
 ## Author
 
-Raymond Clowe
+Raymond C Lowe
 
 ## Contributing
 
