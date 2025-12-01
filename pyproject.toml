@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.8"
 license = {text = "MIT"}
 authors = [
-    {name = "Raymond Clowe", email = "raymond.clowe@gmail.com"}
+    {name = "Raymond C Lowe", email = "raymondclowe@gmail.com"}
 ]
 keywords = ["wake-word", "speech-recognition", "voice-detection", "audio", "whisper"]
 classifiers = [
