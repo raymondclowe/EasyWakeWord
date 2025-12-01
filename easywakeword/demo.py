@@ -2,25 +2,33 @@
 Demo script for EasyWakeWord.
 
 This demo uses the included example audio files to demonstrate wake word detection.
-Run with: python demo.py or easywakeword-demo (after installation)
 """
 import os
-import easywakeword
+import sys
 
 
 def main():
     """Run the wake word detection demo."""
+    # Import here to avoid circular imports
+    try:
+        import easywakeword
+    except ImportError:
+        print("ERROR: easywakeword package not found!")
+        print("Please install with: pip install easywakeword")
+        return 1
+    
     print("=" * 60)
     print("EasyWakeWord Demo")
     print("=" * 60)
     
-    # Get the directory where this file is located
-    demo_dir = os.path.dirname(os.path.abspath(__file__))
+    # Get path to package examples
+    package_dir = os.path.dirname(os.path.abspath(easywakeword.__file__))
+    examples_dir = os.path.join(package_dir, "examples")
     
-    # Path to example audio files (in root directory)
-    example_male = os.path.join(demo_dir, "example_computer_male.wav")
-    example_male_teen = os.path.join(demo_dir, "example_computer_male_teen.wav")
-    example_female = os.path.join(demo_dir, "example_computer_female..wav")
+    # Path to example audio files
+    example_male = os.path.join(examples_dir, "example_computer_male.wav")
+    example_male_teen = os.path.join(examples_dir, "example_computer_male_teen.wav")
+    example_female = os.path.join(examples_dir, "example_computer_female..wav")
     
     # Use the first available example file
     reference_files = []
@@ -31,7 +39,7 @@ def main():
     
     if not reference_files:
         print("ERROR: No example audio files found!")
-        print(f"Looking in: {demo_dir}")
+        print(f"Looking in: {examples_dir}")
         return 1
     
     print(f"\nInitializing wake word detector...")
@@ -75,4 +83,4 @@ def main():
 
 
 if __name__ == "__main__":
-    exit(main())
+    sys.exit(main())

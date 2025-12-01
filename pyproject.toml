@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "easywakeword"
+version = "0.1.0"
+description = "Easy-to-use wake word detection library using MFCC matching and Whisper STT"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "Raymond Clowe", email = "raymond.clowe@gmail.com"}
+]
+keywords = ["wake-word", "speech-recognition", "voice-detection", "audio", "whisper"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "numpy>=1.20.0",
+    "sounddevice>=0.4.5",
+    "librosa>=0.10.0",
+    "soundfile>=0.12.0",
+    "scipy>=1.7.0",
+    "requests>=2.25.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=22.0.0",
+    "flake8>=4.0.0",
+    "mypy>=0.950",
+]
+
+[project.urls]
+Homepage = "https://github.com/raymondclowe/EasyWakeWord"
+Repository = "https://github.com/raymondclowe/EasyWakeWord"
+Issues = "https://github.com/raymondclowe/EasyWakeWord/issues"
+
+[project.scripts]
+easywakeword-demo = "easywakeword.demo:main"
+
+[tool.setuptools]
+packages = ["easywakeword"]
+
+[tool.setuptools.package-data]
+easywakeword = ["examples/*.wav"]
+
+[tool.black]
+line-length = 120
+target-version = ['py38']
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
