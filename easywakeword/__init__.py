@@ -7,7 +7,7 @@ from .silence import SoundBuffer
 from .matching import WordMatcher
 from .recogniser import Recogniser
 from .recogniser import Recogniser as WakeWord
-from .transcription import transcribe_audio, resolve_stt_ip, STT_HOSTNAME, STT_PORT
+from .transcription import transcribe_audio, resolve_stt_ip, STT_HOSTNAME, STT_PORT, STT_API_STYLE, STT_API_KEY
 
 __version__ = "0.1.0"
 
@@ -31,4 +31,6 @@ __all__ = [
     "resolve_stt_ip",
     "STT_HOSTNAME",
     "STT_PORT",
+    "STT_API_STYLE",
+    "STT_API_KEY",
 ]

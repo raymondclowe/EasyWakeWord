@@ -114,7 +114,11 @@ Wait for and detect the wake word.
 
 ## Whisper STT Server
 
-This library requires a Whisper STT server. The recommended server is **mini_transcriber**:
+This library requires a Whisper STT server and supports two API styles:
+
+### Option 1: mini_transcriber (Default)
+
+The recommended lightweight server is **mini_transcriber**:
 
 ```bash
 # Clone mini_transcriber
@@ -125,13 +129,68 @@ cd mini_transcriber
 # The server should be accessible at http://localhost:8080
 ```
 
-The default configuration expects:
-- URL: `http://localhost:8080`
-- Endpoint: POST with `audio` file field
+This is the default configuration - no additional setup needed.
 
-Or configure a custom server URL:
+### Option 2: OpenAI-Compatible API
+
+For OpenAI-compatible endpoints (OpenAI, Azure OpenAI, or compatible servers):
 
 ```python
+import easywakeword
+
+# Configure for OpenAI-style API
+easywakeword.STT_API_STYLE = "openai"
+easywakeword.STT_API_KEY = "your-api-key-here"  # If required
+
+recognizer = easywakeword.wakeword(
+    wakewordstrings=["computer"],
+    wakewordreferenceaudios=["path/to/computer.wav"],
+    whisperurl="http://localhost:8000",  # Your OpenAI-compatible server
+)
+```
+
+Or configure per-instance:
+
+```python
+from easywakeword import Recogniser
+
+recognizer = Recogniser(
+    wakewordstrings=["computer"],
+    wakewordreferenceaudios=["path/to/computer.wav"],
+    whisperurl="https://api.openai.com",  # Or your server
+    # These will be passed to transcribe_audio():
+)
+```
+
+### API Style Details
+
+**mini_transcriber** (default):
+- URL: `http://localhost:8080`
+- Endpoint: POST to root `/`
+- Body: multipart/form-data with `audio` field
+- Response: Plain text transcription
+
+**OpenAI-style**:
+- URL: `http://localhost:8000` (or your server)
+- Endpoint: POST to `/v1/audio/transcriptions`
+- Headers: `Authorization: Bearer <api_key>` (if needed)
+- Body: multipart/form-data with:
+  - `file`: audio file
+  - `model`: model name (e.g., "whisper-1")
+  - `response_format`: "text", "json", "verbose_json", "srt", "vtt"
+  - `language`: ISO-639-1 code (optional)
+  - `prompt`: guidance text (optional)
+  - `temperature`: 0-1 (optional)
+- Response: Text or JSON with transcription
+
+### Custom Server Configuration
+
+```python
+# For mini_transcriber on a different host
+easywakeword.STT_HOSTNAME = "192.168.1.100"
+easywakeword.STT_PORT = 8080
+
+# Or pass directly
 recognizer = easywakeword.Recogniser(
     whisperurl="http://your-server:8080",
     ...
