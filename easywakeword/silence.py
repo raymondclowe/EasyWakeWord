@@ -30,12 +30,25 @@ class SoundBuffer:
         samples = indata[:, 0].tolist()
         self._buffer.extend(samples)
 
-    def is_silent(self):
+    def is_silent(self, window_seconds=0.1):
+        """Check if recent audio is silent. Only checks last window_seconds of audio."""
         if len(self._buffer) == 0:
             return True
-        data = np.array(self._buffer)
+        # Only check recent samples, not the entire buffer
+        window_samples = int(window_seconds * self.FREQUENCY)
+        recent = list(self._buffer)[-window_samples:] if len(self._buffer) >= window_samples else list(self._buffer)
+        data = np.array(recent)
         rms = np.sqrt(np.mean(data**2))
         return rms < self.silence_threshold
+
+    def get_recent_rms(self, window_seconds=0.1):
+        """Get RMS of recent audio window."""
+        if len(self._buffer) == 0:
+            return 0.0
+        window_samples = int(window_seconds * self.FREQUENCY)
+        recent = list(self._buffer)[-window_samples:] if len(self._buffer) >= window_samples else list(self._buffer)
+        data = np.array(recent)
+        return np.sqrt(np.mean(data**2))
 
     def return_last_n_seconds(self, seconds: float):
         n = int(seconds * self.FREQUENCY)

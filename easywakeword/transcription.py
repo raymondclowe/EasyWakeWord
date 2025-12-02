@@ -6,20 +6,23 @@ Supports two API styles:
 2. OpenAI-style: POST to /v1/audio/transcriptions with Bearer auth and additional params
 """
 import requests
-from typing import Optional
+from typing import Optional, Union
 import json
+import io
+import os
+import numpy as np
 
-STT_HOSTNAME = "localhost"
-STT_PORT = 8080
-STT_API_STYLE = "mini_transcriber"  # or "openai"
-STT_API_KEY = None  # Set if using OpenAI-style API
+STT_HOSTNAME = os.environ.get("STT_HOST", "localhost")
+STT_PORT = int(os.environ.get("STT_PORT", "8080"))
+STT_API_STYLE = os.environ.get("STT_API_STYLE", "mini_transcriber")  # or "openai"
+STT_API_KEY = os.environ.get("STT_API_KEY", None)  # Set if using OpenAI-style API
 _stt_session = None
 
 def resolve_stt_ip(hostname: str = STT_HOSTNAME) -> str:
     return hostname
 
 def transcribe_audio(
-    audio: bytes, 
+    audio: Union[bytes, np.ndarray], 
     rate: int, 
     stt_url: Optional[str] = None, 
     prompt: str = None, 
@@ -34,8 +37,8 @@ def transcribe_audio(
     Transcribe audio using either mini_transcriber or OpenAI-style API.
     
     Args:
-        audio: Audio data as bytes
-        rate: Sample rate (used for context, not sent)
+        audio: Audio data as bytes (WAV) or numpy array (float32, mono)
+        rate: Sample rate (used for WAV conversion if audio is numpy array)
         stt_url: Custom STT server URL (overrides default)
         prompt: Optional prompt to guide the model
         model: Model name (e.g., "tiny", "whisper-1")
@@ -49,6 +52,20 @@ def transcribe_audio(
         Transcription text or None on error
     """
     try:
+        # Convert numpy array to WAV bytes if needed
+        if isinstance(audio, np.ndarray):
+            import soundfile as sf
+            buf = io.BytesIO()
+            # Ensure audio is in right format
+            if audio.dtype != np.float32:
+                audio = audio.astype(np.float32)
+            # Clip to valid range
+            audio = np.clip(audio, -1.0, 1.0)
+            sf.write(buf, audio, rate, format='WAV', subtype='PCM_16')
+            audio_bytes = buf.getvalue()
+        else:
+            audio_bytes = audio
+        
         style = api_style or STT_API_STYLE
         key = api_key or STT_API_KEY
         
@@ -58,7 +75,7 @@ def transcribe_audio(
             url = f"{base_url.rstrip('/')}/v1/audio/transcriptions"
             
             # Build multipart form data
-            files = {'file': ('audio.wav', audio, 'audio/wav')}
+            files = {'file': ('audio.wav', audio_bytes, 'audio/wav')}
             data = {
                 'model': model if model != "tiny" else "whisper-1",
                 'response_format': response_format,
@@ -90,17 +107,24 @@ def transcribe_audio(
                         return resp.text.strip()
         
         else:
-            # mini_transcriber style: Simple POST to root
-            url = stt_url or f"http://{resolve_stt_ip()}:{STT_PORT}"
-            files = {'audio': ('audio.wav', audio, 'audio/wav')}
-            resp = requests.post(url, files=files, timeout=5)
+            # mini_transcriber style: POST to /transcribe endpoint
+            base_url = stt_url or f"http://{resolve_stt_ip()}:{STT_PORT}"
+            url = f"{base_url.rstrip('/')}/transcribe"
+            files = {'file': ('audio.wav', audio_bytes, 'audio/wav')}
+            resp = requests.post(url, files=files, timeout=10)
             
             if resp.status_code == 200:
-                return resp.text.strip()
+                # mini_transcriber returns JSON with "text" field
+                try:
+                    result = resp.json()
+                    return result.get('text', '').strip()
+                except:
+                    return resp.text.strip()
     
     except Exception as e:
-        # Silently fail as before, but could log if debug enabled
-        pass
+        # Log errors for debugging
+        import sys
+        print(f"[STT ERROR] {type(e).__name__}: {e}", file=sys.stderr)
     
     return None
 

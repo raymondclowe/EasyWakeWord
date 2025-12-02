@@ -68,7 +68,7 @@ class Recogniser:
         self.max_sound = max_sound
         self.min_trailing_silence = min_trailing_silence
         self.max_audio_duration = max_audio_duration
-        self.allowed_other_words = allowed_other_words if allowed_other_words is not None else []
+        self.allowed_other_words = allowed_other_words if allowed_other_words is not None else ['ok', 'okay', 'hey', 'hi']
         self.padding = padding
         self.stt_minscore = stt_minscore
         self.stt_async = stt_async
@@ -91,9 +91,11 @@ class Recogniser:
                 suggested_max_words = max(3, int(round(max_ref * 2.0)) + 1)
                 if self.wordsminmax == (1, 3):
                     self.wordsminmax = (1, suggested_max_words)
-        # Cache STT IP once
-        stt_ip = resolve_stt_ip()
-        self.stt_url = f"http://{stt_ip}:{STT_PORT}"
+        # Build STT URL from environment variables at runtime
+        import os
+        stt_host = os.environ.get("STT_HOST", "localhost")
+        stt_port = os.environ.get("STT_PORT", "8080")
+        self.stt_url = f"http://{stt_host}:{stt_port}"
         self.soundBuffer = SoundBuffer(device=device)
 
     def waitforit(self):
@@ -105,8 +107,6 @@ class Recogniser:
             sd.sleep(100)
             is_currently_silent = self.soundBuffer.is_silent()
             current_time = time.time()
-            if self.debug:
-                debug_print(f"[DEBUG] State: {state}, SilenceThresh: {getattr(self.soundBuffer, 'silence_threshold', None):.4f}", debug=self.debug)
             prev_state = state
             if state == 'waiting':
                 if is_currently_silent:
@@ -150,7 +150,7 @@ class Recogniser:
                         best_name, best_score, all_scores = self.matcher.best_match(word_audio, threshold=self.threshold)
                         audio_rms = np.sqrt(np.mean(word_audio**2))
                         audio_max = np.max(np.abs(word_audio))
-                        print(f"[Best match: {best_name} {best_score:.1f} | All: {all_scores} | RMS={audio_rms:.4f} Max={audio_max:.4f}]", end=" ")
+                        print(f"[Match: {best_name} {best_score:.1f}%]", end=" ")
                         if best_score >= self.threshold and best_score >= self.stt_minscore:
                             if self.debug_playback:
                                 sd.play(word_audio, SoundBuffer.FREQUENCY)
@@ -194,6 +194,6 @@ class Recogniser:
                                 sd.wait()
                         state = 'waiting'
             if self.debug and prev_state != state:
-                debug_print(f"[DEBUG] State transition: {prev_state} -> {state}", debug=self.debug)
+                debug_print(f"State: {prev_state} -> {state}", debug=self.debug)
         return None
 __all__ = ["Recogniser"]
