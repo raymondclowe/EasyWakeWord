@@ -122,12 +122,11 @@ git clone https://github.com/raymondclowe/mini_transcriber.git
 cd mini_transcriber
 
 # Follow setup instructions in that repo
-# The server should be accessible at mini_transcriber.local:8080
+# The server should be accessible at http://localhost:8080
 ```
 
 The default configuration expects:
-- Hostname: `mini_transcriber.local`
-- Port: `8080`
+- URL: `http://localhost:8080`
 - Endpoint: POST with `audio` file field
 
 Or configure a custom server URL:
